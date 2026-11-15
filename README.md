@@ -2,7 +2,7 @@
 
 **Sistema distribuído de armazenamento de arquivos com replicação, integridade por SHA-256 e recuperação automática de falhas.**
 
-> **Estado do projeto:** em planejamento / implementação inicial. Este README descreve a **arquitetura-alvo**; não implica que os serviços, endpoints e comandos já estejam implementados. Atualizar as instruções de execução à medida que forem testadas.
+> **Estado do projeto:** implementação incremental. A CLI e seu MockBackend já existem na `main`. O bootstrap do controlador/PostgreSQL e dos cinco nós está em desenvolvimento. As demais operações distribuídas são **planejadas**, não entregues. Consulte a seção de execução e o [guia de bootstrap](docs/bootstrap.md).
 
 Projeto acadêmico da disciplina de **Sistemas Distribuídos** da **Universidade Federal de Sergipe (UFS)**, sob orientação do professor **Rafael Oliveira Vasconcelos**.
 
@@ -142,7 +142,7 @@ Com **W = N**, uma escrita pode ficar indisponível durante uma falha se não ho
 
 Utilizar chaves estrangeiras, índices para consultas por arquivo/nó e restrições de unicidade. Impedir duplicação de réplicas na mesma máquina/disco deve ser garantido pela lógica transacional de alocação, além das restrições adequadas no banco.
 
-## 6. Estrutura planejada
+## 6. Estrutura em evolução
 
 > A árvore é uma **proposta** e não uma descrição de arquivos que já existem na branch principal.
 
@@ -175,15 +175,18 @@ cd Dcomp-Drive
 git status
 ~~~
 
-### Executar o ambiente (a implementar)
+### Executar o ambiente de descoberta (após integrar o PR de bootstrap)
 
-> Os comandos seguintes **não estão validados**: dependem de criar os arquivos de infraestrutura e os serviços.
+> O Docker Compose inicializa PostgreSQL, o controlador e cinco nós com registro/heartbeat automático. **Ainda não implementa transferência real de arquivos, replicação nem recuperação de dados.**
 
 ~~~bash
 cp .env.example .env
 docker compose up --build -d
 docker compose ps
 docker compose logs -f
+# Em outro terminal:
+curl http://localhost:8000/health
+curl http://localhost:8000/status
 docker compose down
 ~~~
 
@@ -207,7 +210,7 @@ Quando a criptografia for habilitada, definir algoritmo de biblioteca consolidad
 
 ## 8. Interface planejada
 
-Os comandos abaixo são **exemplos de UX**, não funcionalidades já disponibilizadas:
+Os comandos abaixo já estão disponíveis no **MockBackend local** depois de instalar as dependências com `pip install -r requirements.txt`. Eles **não** se comunicam com o cluster Docker:
 
 ~~~bash
 python -m client.cli put ./trabalho.pdf /documentos/trabalho.pdf
@@ -297,3 +300,7 @@ Enunciado da atividade **Sistema Distribuído de Armazenamento de Arquivos**, di
 ---
 
 **Nota:** as seções de instalação e API serão convertidas em documentação de uso real após a implementação e validação dos módulos.
+
+### Implementação incremental
+
+O CLI permanece em modo mock (`client/mock_backend.py`) e guarda seus dados em `.dcomp_mock/`. O bootstrap do serviço distribuído cobre **apenas registro de nós, heartbeat, estados e capacidade**. Veja [docs/bootstrap.md](docs/bootstrap.md) para os contratos implementados e os próximos passos da integração.
