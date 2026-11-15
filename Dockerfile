@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY controller /app/controller
 COPY storage /app/storage
 COPY client /app/client
+COPY tests /app/tests
 COPY migrations /app/migrations
 COPY alembic.ini /app/alembic.ini
 

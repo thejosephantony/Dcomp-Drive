@@ -10,6 +10,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from controller.database import get_session
+from controller.file_api import router as files_router
 from controller.models import Disk, Node
 from controller.monitor import monitor_forever, recalculate_status
 from controller.schemas import ClusterStatus, Heartbeat, NodeRegistration, NodeStatus
@@ -30,7 +31,8 @@ async def lifespan(app: FastAPI):
             pass
 
 
-app = FastAPI(title="DComp Drive Controller", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="DComp Drive Controller", version="0.2.0", lifespan=lifespan)
+app.include_router(files_router)
 
 
 def _write_disks(session: Session, node: Node, reports) -> None:
