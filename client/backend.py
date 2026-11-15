@@ -1,0 +1,33 @@
+"""Interface entre a CLI e a implementação real da comunicação com o cluster.
+
+Hoje só existe o MockBackend (sem rede, estado em disco local). Quando o
+controlador e os storage nodes estiverem prontos, um HttpBackend implementa
+o mesmo Protocol e a CLI troca de um para o outro sem mudar os comandos.
+"""
+
+from pathlib import Path
+from typing import Protocol
+
+from client.models import ClusterStatus, DirEntry, FileMetadata
+
+
+class Backend(Protocol):
+    def put(self, local_path: Path, remote_path: str) -> FileMetadata: ...
+
+    def get(self, remote_path: str, local_path: Path) -> FileMetadata: ...
+
+    def ls(self, remote_path: str) -> list[DirEntry]: ...
+
+    def mkdir(self, remote_path: str) -> None: ...
+
+    def rmdir(self, remote_path: str) -> None: ...
+
+    def mv(self, src: str, dst: str) -> None: ...
+
+    def rm(self, remote_path: str) -> None: ...
+
+    def stat(self, remote_path: str) -> FileMetadata: ...
+
+    def status(self) -> ClusterStatus: ...
+
+    def drain(self, node_id: str) -> None: ...

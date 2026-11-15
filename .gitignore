@@ -1,0 +1,12 @@
+# Estado do MockBackend (client/mock_backend.py) — dados de demonstração
+# local, não deve ir pro repositório.
+.dcomp_mock/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Segredos
+.env
