@@ -64,13 +64,21 @@ def health(session: Session = Depends(get_session)) -> dict[str, str]:
 def register(payload: NodeRegistration, session: Session = Depends(get_session)) -> dict[str, str]:
     node = session.get(Node, payload.node_id)
     if node is None:
-        node = Node(node_id=payload.node_id)
+        node = Node(
+            node_id=payload.node_id,
+            machine_id=payload.machine_id,
+            address=str(payload.address),
+            last_heartbeat=datetime.now(timezone.utc),
+            state="HEALTHY",
+        )
         session.add(node)
+        # Os campos NOT NULL precisam estar preenchidos antes do primeiro flush.
         session.flush()
-    node.machine_id = payload.machine_id
-    node.address = str(payload.address)
-    node.last_heartbeat = datetime.now(timezone.utc)
-    node.state = "HEALTHY"
+    else:
+        node.machine_id = payload.machine_id
+        node.address = str(payload.address)
+        node.last_heartbeat = datetime.now(timezone.utc)
+        node.state = "HEALTHY"
     _write_disks(session, node, payload.disks)
     session.commit()
     return {"node_id": node.node_id, "state": node.state}
