@@ -304,3 +304,10 @@ Enunciado da atividade **Sistema Distribuído de Armazenamento de Arquivos**, di
 ### Implementação incremental
 
 O CLI permanece em modo mock (`client/mock_backend.py`) e guarda seus dados em `.dcomp_mock/`. O bootstrap do serviço distribuído cobre **apenas registro de nós, heartbeat, estados e capacidade**. Veja [docs/bootstrap.md](docs/bootstrap.md) para os contratos implementados e os próximos passos da integração.
+
+### Preparação de arquivos (PR incremental)
+
+O plano de controle de arquivos é implementado em uma etapa separada, com
+`/files/prepare`, confirmação de réplicas e publicação de versões. **Os ACKs de
+réplicas são simuláveis; ainda não provam que os bytes foram gravados nos nós**.
+Consulte [docs/file-control.md](docs/file-control.md) antes de executar.

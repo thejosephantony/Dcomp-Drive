@@ -6,6 +6,7 @@ from alembic import context
 from sqlalchemy import create_engine, pool
 
 from controller.models import Base
+from controller import file_models  # Registra as tabelas de arquivos no Base.metadata
 
 target_metadata = Base.metadata
 
