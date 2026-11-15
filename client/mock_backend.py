@@ -73,6 +73,8 @@ class MockBackend:
         path = _normalize(remote_path)
         if path in self._state["dirs"]:
             raise ConflictError(f"diretório já existe: {path}")
+        if path in self._state["files"]:
+            raise ConflictError(f"já existe um arquivo com esse caminho: {path}")
         parent = _parent(path)
         if parent not in self._state["dirs"]:
             raise NotFoundError(f"diretório pai não existe: {parent}")
@@ -113,7 +115,11 @@ class MockBackend:
     def put(self, local_path: Path, remote_path: str) -> FileMetadata:
         if not local_path.is_file():
             raise NotFoundError(f"arquivo local não encontrado: {local_path}")
+        if REPLICATION_FACTOR < 1:
+            raise ConflictError(f"fator de replicação inválido: {REPLICATION_FACTOR} (deve ser >= 1)")
         path = _normalize(remote_path)
+        if path in self._state["dirs"]:
+            raise ConflictError(f"já existe um diretório com esse caminho: {path}")
         parent = _parent(path)
         if parent not in self._state["dirs"]:
             raise NotFoundError(f"diretório de destino não existe: {parent}")
@@ -143,6 +149,12 @@ class MockBackend:
             (node_dir / object_key).write_bytes(content)
             objects[node_id] = object_key
             self._state["nodes"][node_id]["used_bytes"] += len(content)
+
+        # Sobrescrita: as réplicas da versão anterior ficariam órfãs em disco
+        # (e contabilizadas em used_bytes), então são removidas só depois que
+        # as novas já foram gravadas.
+        if previous:
+            self._remove_objects(previous)
 
         self._state["files"][path] = {
             "version": version,
@@ -199,10 +211,15 @@ class MockBackend:
         entry = self._state["files"].pop(path, None)
         if entry is None:
             raise NotFoundError(f"arquivo não encontrado: {path}")
+        self._remove_objects(entry)
+        self._save()
+
+    def _remove_objects(self, entry: dict) -> None:
+        """Apaga as réplicas de uma entrada de arquivo e desconta o uso dos nós."""
         for node_id, object_key in entry["objects"].items():
             (self._objects_dir / node_id / object_key).unlink(missing_ok=True)
-            self._state["nodes"][node_id]["used_bytes"] -= entry["size"]
-        self._save()
+            if node_id in self._state["nodes"]:
+                self._state["nodes"][node_id]["used_bytes"] -= entry["size"]
 
     def stat(self, remote_path: str) -> FileMetadata:
         path = _normalize(remote_path)
