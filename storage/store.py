@@ -18,6 +18,27 @@ from storage.schemas import ObjectMetadata, ScrubReport, validate_object_id_str
 logger = logging.getLogger(__name__)
 
 
+def _sync_file(f) -> None:
+    """Força gravação física dos dados dos buffers do SO para o disco (fsync)."""
+    f.flush()
+    try:
+        os.fsync(f.fileno())
+    except OSError:
+        pass
+
+
+def _sync_dir(dir_path: Path) -> None:
+    """Sincroniza o diretório no disco (em sistemas POSIX/Linux) após renomeações e exclusões."""
+    try:
+        fd = os.open(str(dir_path), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except (OSError, AttributeError):
+        pass
+
+
 class StorageError(Exception):
     """Exceção base de erros no armazenamento local."""
 
@@ -78,15 +99,60 @@ class ObjectStore:
             logger.warning("Falha ao limpar diretório temporário: %s", self.tmp_dir)
 
     def _reload_metadata(self) -> None:
-        """Carrega metadados existentes em disco para reconstruir o estado em memória."""
+        """Carrega metadados e reconcilia o estado dos arquivos em disco após inicialização/reboot."""
         self._cache.clear()
+
+        # 1. Carrega metadados JSON persistidos
         for meta_file in self.meta_dir.glob("*.json"):
             try:
                 data = json.loads(meta_file.read_text(encoding="utf-8"))
                 meta = ObjectMetadata(**data)
+                obj_file = self.objects_dir / meta.object_id
+                if not obj_file.exists():
+                    meta.status = "CORRUPTED"
+                    logger.warning(
+                        "restart_reconcile_missing_file node=%s object_id=%s",
+                        self.node_id,
+                        meta.object_id,
+                    )
                 self._cache[meta.object_id] = meta
             except Exception:
                 logger.exception("Falha ao ler metadado: %s", meta_file)
+
+        # 2. Reconciliação: descobre arquivos em objects/ sem metadados (ex: queda antes de salvar o meta)
+        for obj_file in self.objects_dir.iterdir():
+            if not obj_file.is_file():
+                continue
+            obj_id = obj_file.name
+            if obj_id not in self._cache:
+                try:
+                    validate_object_id_str(obj_id)
+                    hasher = hashlib.sha256()
+                    size = 0
+                    with open(obj_file, "rb") as f:
+                        while chunk := f.read(65536):
+                            size += len(chunk)
+                            hasher.update(chunk)
+                    digest = hasher.hexdigest().lower()
+                    now_str = datetime.now(timezone.utc).isoformat()
+                    recovered_meta = ObjectMetadata(
+                        object_id=obj_id,
+                        size_bytes=size,
+                        sha256=digest,
+                        created_at=now_str,
+                        last_scrubbed_at=now_str,
+                        status="HEALTHY",
+                    )
+                    self._save_metadata(recovered_meta)
+                    logger.info(
+                        "restart_recovered_orphan_object node=%s object_id=%s size=%d sha256=%s",
+                        self.node_id,
+                        obj_id,
+                        size,
+                        digest,
+                    )
+                except Exception:
+                    logger.exception("Falha ao reconciliar objeto órfão: %s", obj_file)
 
     def _lock_for(self, object_id: str) -> asyncio.Lock:
         return self._locks[object_id]
@@ -123,9 +189,12 @@ class ObjectStore:
 
     def _save_metadata(self, meta: ObjectMetadata) -> None:
         tmp_meta = self.tmp_dir / f"{meta.object_id}_{uuid.uuid4().hex}.meta.tmp"
-        tmp_meta.write_text(meta.model_dump_json(indent=2), encoding="utf-8")
+        with open(tmp_meta, "w", encoding="utf-8") as f:
+            f.write(meta.model_dump_json(indent=2))
+            _sync_file(f)
         target_meta = self.meta_dir / f"{meta.object_id}.json"
         tmp_meta.replace(target_meta)
+        _sync_dir(self.meta_dir)
         self._cache[meta.object_id] = meta
 
     async def put(
@@ -164,6 +233,8 @@ class ObjectStore:
                             raise InsufficientStorageError("Capacidade do nó excedida durante gravação")
                         hasher.update(chunk)
                         f.write(chunk)
+                    # Força gravação física dos dados dos buffers do SO para o disco antes do replace
+                    _sync_file(f)
 
                 computed_hash = hasher.hexdigest().lower()
 
@@ -177,6 +248,7 @@ class ObjectStore:
                 # Persistência atômica: substituição do arquivo definitivo
                 target_path = self.objects_dir / object_id
                 tmp_path.replace(target_path)
+                _sync_dir(self.objects_dir)
 
                 now_str = datetime.now(timezone.utc).isoformat()
                 meta = ObjectMetadata(
@@ -252,8 +324,10 @@ class ObjectStore:
 
             if object_path.exists():
                 object_path.unlink(missing_ok=True)
+                _sync_dir(self.objects_dir)
             if meta_path.exists():
                 meta_path.unlink(missing_ok=True)
+                _sync_dir(self.meta_dir)
 
             self._cache.pop(object_id, None)
             logger.info("delete_object_success node=%s object_id=%s", self.node_id, object_id)

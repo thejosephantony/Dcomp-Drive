@@ -356,3 +356,95 @@ def test_put_with_write_id_acks_controller(clean_store, monkeypatch):
     assert len(acked_calls) == 1
     assert acked_calls[0]["write_id"] == "op-write-123"
     assert acked_calls[0]["size_bytes"] == len(content)
+
+
+def test_physical_persistence_across_restart(tmp_path: Path):
+    """Garante que os arquivos gravados fisicamente em disco permanecem íntegros e acessíveis após restart do serviço."""
+    data_dir = tmp_path / "persistent_storage"
+
+    # Fase 1: Nó em execução gravando arquivos físicos
+    store1 = ObjectStore(data_dir=data_dir, node_id="storage-pers-1", disk_id="disk-pers-1")
+
+    import asyncio
+    async def write_files():
+        async def stream1():
+            yield b"Primeiro arquivo persistido no disco"
+        async def stream2():
+            yield b"Segundo arquivo persistido no disco"
+        meta1 = await store1.put("pers-1", stream1())
+        meta2 = await store1.put("pers-2", stream2())
+        return meta1, meta2
+
+    meta1, meta2 = asyncio.run(write_files())
+    assert (data_dir / "objects" / "pers-1").exists()
+    assert (data_dir / "objects" / "pers-2").exists()
+    assert (data_dir / "meta" / "pers-1.json").exists()
+    assert (data_dir / "meta" / "pers-2.json").exists()
+
+    # Fase 2: Simulação de reinicialização completa do processo / serviço
+    del store1
+
+    # Nova instância iniciando no mesmo diretório de dados persistido
+    store2 = ObjectStore(data_dir=data_dir, node_id="storage-pers-1", disk_id="disk-pers-1")
+
+    # Verifica que o estado e métricas foram reconstruídos perfeitamente a partir do disco
+    assert len(store2.list_objects()) == 2
+    assert store2.get_used_bytes() == meta1.size_bytes + meta2.size_bytes
+
+    recovered1 = store2.get_metadata("pers-1")
+    assert recovered1.sha256 == meta1.sha256
+    assert recovered1.size_bytes == meta1.size_bytes
+    assert recovered1.status == "HEALTHY"
+
+    recovered2 = store2.get_metadata("pers-2")
+    assert recovered2.sha256 == meta2.sha256
+    assert recovered2.size_bytes == meta2.size_bytes
+    assert recovered2.status == "HEALTHY"
+
+    # Leitura dos dados após o restart com verificação de SHA-256
+    async def read_files():
+        _, stream = await store2.get_stream("pers-1", verify=True)
+        content1 = b""
+        async for chunk in stream:
+            content1 += chunk
+        return content1
+
+    content_read = asyncio.run(read_files())
+    assert content_read == b"Primeiro arquivo persistido no disco"
+
+
+def test_restart_recovers_orphaned_object(tmp_path: Path):
+    """Testa recuperação automática de arquivo físico presente em objects/ sem arquivo de metadados."""
+    data_dir = tmp_path / "orphan_test"
+    objects_dir = data_dir / "objects"
+    objects_dir.mkdir(parents=True)
+
+    orphan_data = b"Dados orfaos gravados diretamente no disco"
+    orphan_sha = hashlib.sha256(orphan_data).hexdigest()
+    (objects_dir / "orphan-obj").write_bytes(orphan_data)
+
+    # Inicialização do store no diretório com arquivo órfão
+    store = ObjectStore(data_dir=data_dir, node_id="storage-orphan", disk_id="disk-orphan")
+
+    # O store deve ter reconciliado e criado os metadados automaticamente
+    assert "orphan-obj" in [m.object_id for m in store.list_objects()]
+    meta = store.get_metadata("orphan-obj")
+    assert meta.sha256 == orphan_sha
+    assert meta.size_bytes == len(orphan_data)
+    assert meta.status == "HEALTHY"
+    assert (data_dir / "meta" / "orphan-obj.json").exists()
+
+
+def test_restart_detects_missing_physical_file(tmp_path: Path):
+    """Testa detecção no restart quando há metadado mas o arquivo físico foi apagado."""
+    data_dir = tmp_path / "missing_file_test"
+    meta_dir = data_dir / "meta"
+    meta_dir.mkdir(parents=True)
+
+    # Cria metadado artificial sem o arquivo em objects/
+    meta_content = '{"object_id": "lost-obj", "size_bytes": 100, "sha256": "' + ("a" * 64) + '", "created_at": "2026-01-01T00:00:00Z", "status": "HEALTHY"}'
+    (meta_dir / "lost-obj.json").write_text(meta_content, encoding="utf-8")
+
+    store = ObjectStore(data_dir=data_dir, node_id="storage-missing", disk_id="disk-missing")
+    meta = store.get_metadata("lost-obj")
+    assert meta.status == "CORRUPTED"
