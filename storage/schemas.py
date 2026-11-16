@@ -14,6 +14,16 @@ def validate_object_id_str(object_id: str) -> str:
     return object_id
 
 
+def validate_sha256_digest(value: str) -> str:
+    """Valida e normaliza um hash SHA-256 (64 dígitos hexadecimais em minúsculo)."""
+    if not value or not isinstance(value, str):
+        raise ValueError("sha256 não pode ser vazio")
+    cleaned = value.strip().lower()
+    if not _SHA256.fullmatch(cleaned):
+        raise ValueError("sha256 deve conter exatamente 64 dígitos hexadecimais minúsculos")
+    return cleaned
+
+
 class ObjectMetadata(BaseModel):
     object_id: str
     size_bytes: int = Field(ge=0)
@@ -25,9 +35,16 @@ class ObjectMetadata(BaseModel):
     @field_validator("sha256")
     @classmethod
     def validate_digest(cls, value: str) -> str:
-        if not _SHA256.fullmatch(value.lower()):
-            raise ValueError("sha256 deve conter 64 dígitos hexadecimais")
-        return value.lower()
+        return validate_sha256_digest(value)
+
+
+class ObjectVerifyResponse(BaseModel):
+    object_id: str
+    status: str
+    expected_sha256: str
+    computed_sha256: str
+    size_bytes: int
+    match: bool
 
 
 class PutObjectResponse(BaseModel):

@@ -13,9 +13,28 @@ import shutil
 import time
 import uuid
 
-from storage.schemas import ObjectMetadata, ScrubReport, validate_object_id_str
+from storage.schemas import (
+    ObjectMetadata,
+    ScrubReport,
+    validate_object_id_str,
+    validate_sha256_digest,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def compute_file_sha256(file_path: Path, chunk_size: int = 65536) -> tuple[str, int]:
+    """Calcula o hash SHA-256 e o tamanho de um arquivo em disco de forma incremental.
+
+    Lê em blocos (padrão 64 KB) para evitar carregar arquivos grandes na memória RAM.
+    """
+    hasher = hashlib.sha256()
+    size = 0
+    with open(file_path, "rb") as f:
+        while chunk := f.read(chunk_size):
+            size += len(chunk)
+            hasher.update(chunk)
+    return hasher.hexdigest().lower(), size
 
 
 def _sync_file(f) -> None:
@@ -127,13 +146,7 @@ class ObjectStore:
             if obj_id not in self._cache:
                 try:
                     validate_object_id_str(obj_id)
-                    hasher = hashlib.sha256()
-                    size = 0
-                    with open(obj_file, "rb") as f:
-                        while chunk := f.read(65536):
-                            size += len(chunk)
-                            hasher.update(chunk)
-                    digest = hasher.hexdigest().lower()
+                    digest, size = compute_file_sha256(obj_file)
                     now_str = datetime.now(timezone.utc).isoformat()
                     recovered_meta = ObjectMetadata(
                         object_id=obj_id,
@@ -206,6 +219,11 @@ class ObjectStore:
     ) -> ObjectMetadata:
         validate_object_id_str(object_id)
 
+        # Validação antecipada do formato do hash esperado (64 hex), antes de tocar no disco
+        normalized_expected = None
+        if expected_sha256 is not None:
+            normalized_expected = validate_sha256_digest(expected_sha256)
+
         async with self._lock_for(object_id):
             previous_meta = self._cache.get(object_id)
             previous_size = previous_meta.size_bytes if previous_meta else 0
@@ -218,6 +236,7 @@ class ObjectStore:
                         f"Capacidade do nó excedida: requerido {needed}B, disponível {self.get_free_bytes()}B"
                     )
 
+            # Grava em arquivo temporário isolado: se a validação falhar, a versão anterior não é afetada
             tmp_path = self.tmp_dir / f"{object_id}_{uuid.uuid4().hex}.tmp"
             hasher = hashlib.sha256()
             bytes_written = 0
@@ -238,14 +257,14 @@ class ObjectStore:
 
                 computed_hash = hasher.hexdigest().lower()
 
-                if expected_sha256 is not None:
-                    expected_normalized = expected_sha256.strip().lower()
-                    if computed_hash != expected_normalized:
+                # Se o cliente informou X-Expected-Sha256, valida o hash antes de qualquer persistência definitiva
+                if normalized_expected is not None:
+                    if computed_hash != normalized_expected:
                         raise HashMismatchError(
-                            f"Hash SHA-256 diverge: esperado '{expected_normalized}', calculado '{computed_hash}'"
+                            f"Hash SHA-256 diverge: esperado '{normalized_expected}', calculado '{computed_hash}'"
                         )
 
-                # Persistência atômica: substituição do arquivo definitivo
+                # Persistência atômica: substituição do arquivo definitivo somente após validação completa
                 target_path = self.objects_dir / object_id
                 tmp_path.replace(target_path)
                 _sync_dir(self.objects_dir)
@@ -270,6 +289,8 @@ class ObjectStore:
                 return meta
 
             except Exception:
+                # Em qualquer falha (hash inválido, erro de conexão ou disco), o arquivo temporário é removido
+                # e a versão anterior em target_path permanece 100% íntegra e inalterada
                 if tmp_path.exists():
                     tmp_path.unlink(missing_ok=True)
                 raise
@@ -283,13 +304,15 @@ class ObjectStore:
         if not object_path.exists():
             raise ObjectNotFoundError(f"Arquivo físico do objeto não existe: {object_id}")
 
+        # Se o objeto já estiver marcado como corrompido, interrompe imediatamente
+        if meta.status == "CORRUPTED":
+            raise CorruptedObjectError(
+                f"Objeto {object_id} corrompido: hash em disco diverge do metadado ({meta.sha256})"
+            )
+
         if verify:
-            # Verificação prévia de integridade antes do envio
-            hasher = hashlib.sha256()
-            with open(object_path, "rb") as f:
-                while chunk := f.read(65536):
-                    hasher.update(chunk)
-            current_hash = hasher.hexdigest().lower()
+            # Verificação prévia e incremental de integridade por SHA-256 antes da liberação do stream
+            current_hash, _ = compute_file_sha256(object_path)
 
             if current_hash != meta.sha256.lower():
                 meta.status = "CORRUPTED"
@@ -359,11 +382,7 @@ class ObjectStore:
                     corrupted_ids.append(obj_id)
                     continue
 
-                hasher = hashlib.sha256()
-                with open(obj_path, "rb") as f:
-                    while chunk := f.read(65536):
-                        hasher.update(chunk)
-                current_hash = hasher.hexdigest().lower()
+                current_hash, _ = compute_file_sha256(obj_path)
 
                 meta.last_scrubbed_at = now_str
                 if current_hash == meta.sha256.lower():
@@ -403,6 +422,30 @@ class ObjectStore:
             duration,
         )
         return report
+
+    async def verify_object_integrity(self, object_id: str) -> tuple[bool, str, str, ObjectMetadata]:
+        """Verifica a integridade pontual de um objeto calculando incrementalmente seu SHA-256 em disco.
+
+        Compara com o hash registrado nos metadados persistentes e atualiza o estado para
+        HEALTHY ou CORRUPTED caso haja discrepância.
+        Retorna (is_valid, expected_hash, computed_hash, metadata).
+        """
+        validate_object_id_str(object_id)
+        async with self._lock_for(object_id):
+            meta = self.get_metadata(object_id)
+            obj_path = self.objects_dir / object_id
+            if not obj_path.exists():
+                meta.status = "CORRUPTED"
+                self._save_metadata(meta)
+                return False, meta.sha256, "", meta
+
+            computed_hash, _ = compute_file_sha256(obj_path)
+            is_valid = (computed_hash == meta.sha256.lower())
+            new_status = "HEALTHY" if is_valid else "CORRUPTED"
+            if meta.status != new_status:
+                meta.status = new_status
+                self._save_metadata(meta)
+            return is_valid, meta.sha256, computed_hash, meta
 
     def corrupt_for_testing(self, object_id: str) -> None:
         """Injeta corrupção física alterando um byte do arquivo em disco (apenas para testes)."""

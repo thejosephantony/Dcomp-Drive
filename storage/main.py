@@ -21,11 +21,13 @@ import httpx
 
 from storage.schemas import (
     ObjectMetadata,
+    ObjectVerifyResponse,
     PutObjectResponse,
     ReplicateRequest,
     ReplicateResponse,
     ScrubReport,
     StorageStatus,
+    validate_sha256_digest,
 )
 from storage.store import (
     CorruptedObjectError,
@@ -215,6 +217,12 @@ async def put_object(
     x_write_id: str | None = Header(None),
 ) -> PutObjectResponse:
     target_sha = expected_sha256 or x_expected_sha256
+    if target_sha is not None:
+        try:
+            target_sha = validate_sha256_digest(target_sha)
+        except ValueError as exc:
+            raise HTTPException(422, detail=f"Hash SHA-256 esperado inválido: {exc}")
+
     target_write_id = write_id or x_write_id
 
     content_length_header = request.headers.get("content-length")
@@ -262,12 +270,19 @@ async def get_object(object_id: str, verify: bool = Query(True)):
 @app.head("/objects/{object_id}")
 async def head_object(object_id: str):
     meta = store.get_metadata(object_id)
+    if meta.status == "CORRUPTED":
+        raise HTTPException(
+            status_code=500,
+            detail=f"Objeto {object_id} corrompido: hash não confere",
+            headers={"X-Object-Status": "CORRUPTED", "X-Sha256": meta.sha256},
+        )
     return Response(
         status_code=200,
         headers={
             "ETag": f'"{meta.sha256}"',
             "X-Sha256": meta.sha256,
             "Content-Length": str(meta.size_bytes),
+            "X-Object-Status": meta.status,
         },
     )
 
@@ -275,6 +290,25 @@ async def head_object(object_id: str):
 @app.get("/objects/{object_id}/meta", response_model=ObjectMetadata)
 def get_object_meta(object_id: str) -> ObjectMetadata:
     return store.get_metadata(object_id)
+
+
+@app.get("/objects/{object_id}/verify", response_model=ObjectVerifyResponse)
+async def verify_object(object_id: str) -> ObjectVerifyResponse:
+    """Verifica explicitamente a integridade por SHA-256 de um objeto no disco."""
+    is_valid, expected, computed, meta = await store.verify_object_integrity(object_id)
+    if not is_valid:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Integridade violada para {object_id}: esperado {expected}, calculado {computed}",
+        )
+    return ObjectVerifyResponse(
+        object_id=object_id,
+        status=meta.status,
+        expected_sha256=expected,
+        computed_sha256=computed,
+        size_bytes=meta.size_bytes,
+        match=is_valid,
+    )
 
 
 @app.delete("/objects/{object_id}")
@@ -292,6 +326,8 @@ async def replicate_object(object_id: str, payload: ReplicateRequest) -> Replica
 
     if payload.target_address:
         meta = store.get_metadata(object_id)
+        if meta.status == "CORRUPTED":
+            raise HTTPException(409, detail=f"Não é possível replicar objeto corrompido: {object_id}")
         target_url = f"{payload.target_address.rstrip('/')}/objects/{object_id}"
 
         async def file_stream():
