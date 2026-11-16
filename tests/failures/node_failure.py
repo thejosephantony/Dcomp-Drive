@@ -54,6 +54,23 @@ class RunResult:
     error: str | None = None
 
 
+def compose_setting(name: str, default: str, env_file: Path = REPO_ROOT / ".env") -> str:
+    """Valor que o docker compose passa ao controlador para `name`.
+
+    Mesma precedência do compose: variável exportada no shell, depois o .env
+    da raiz, depois o padrão do docker-compose.yml. Sem isso, um timeout
+    definido só no .env faria o script usar 6 s e acusar falha falsa.
+    """
+    if name in os.environ:
+        return os.environ[name]
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            key, sep, value = line.partition("=")
+            if sep and key.strip() == name:
+                return value.split("#", 1)[0].strip().strip("\"'")
+    return default
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
@@ -89,14 +106,16 @@ def wait_for_state(
     """
     start = clock()
     while True:
-        elapsed = clock() - start
         try:
             state = read_state()
         except httpx.HTTPError:
             state = None
+        # Medido depois da leitura: com um /status lento, medir antes
+        # registraria o estado cedo demais e aceitaria respostas atrasadas.
+        elapsed = clock() - start
         if on_state is not None:
             on_state(state, elapsed)
-        if state in targets:
+        if state in targets and elapsed <= deadline_s:
             return state, elapsed
         if elapsed >= deadline_s:
             raise ScenarioError(
@@ -187,8 +206,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--node-timeout",
         type=float,
-        default=float(os.environ.get("NODE_TIMEOUT_SECONDS", "6")),
-        help="deve bater com NODE_TIMEOUT_SECONDS do controlador",
+        default=float(compose_setting("NODE_TIMEOUT_SECONDS", "6")),
+        help="padrão: NODE_TIMEOUT_SECONDS do shell ou do .env, como o compose",
     )
     parser.add_argument("--grace", type=float, default=4.0, help="tolerância além do timeout para chegar a DEAD")
     parser.add_argument("--restart-deadline", type=float, default=30.0, help="limite para voltar a HEALTHY")
