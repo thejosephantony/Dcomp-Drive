@@ -1,9 +1,10 @@
 """CLI do DComp Drive (python -m client.cli <comando>).
 
-Por enquanto fala só com o MockBackend (ver client/mock_backend.py). Trocar
-para o backend real vai significar mudar apenas a função _backend() abaixo.
+O backend é selecionado por DCOMP_BACKEND=mock (padrão) ou http.
+No modo HTTP, put/get/stat/status utilizam o controlador real.
 """
 
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -12,12 +13,18 @@ import typer
 from client.backend import Backend
 from client.errors import CLIError
 from client.mock_backend import MockBackend
+from client.http_backend import HttpBackend
 
-app = typer.Typer(help="DComp Drive — cliente de linha de comando (modo mock)")
+app = typer.Typer(help="DComp Drive — cliente de linha de comando (mock ou HTTP)")
 
 
 def _backend() -> Backend:
-    return MockBackend()
+    mode = os.getenv("DCOMP_BACKEND", "mock").strip().lower()
+    if mode == "http":
+        return HttpBackend()
+    if mode == "mock":
+        return MockBackend()
+    raise typer.BadParameter("DCOMP_BACKEND deve ser mock ou http")
 
 
 def _call(fn: Callable[..., Any], *args: object, **kwargs: object) -> Any:
@@ -108,12 +115,14 @@ def stat(remote_path: str) -> None:
 
 @app.command()
 def status() -> None:
-    """Mostra o estado do cluster simulado: nós, uso e arquivos por estado."""
+    """Mostra o estado dos nós no backend configurado."""
     cluster = _call(_backend().status)
     typer.echo("nós:")
     for node in cluster.nodes:
         typer.echo(f"  {node.node_id}  {node.state.value}  {node.used_bytes}/{node.capacity_bytes} bytes")
     typer.echo("arquivos por estado:")
+    if not cluster.files_by_state:
+        typer.echo("  (contagem não disponibilizada)")
     for state, count in cluster.files_by_state.items():
         typer.echo(f"  {state}: {count}")
 
