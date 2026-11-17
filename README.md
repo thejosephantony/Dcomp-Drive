@@ -268,6 +268,20 @@ docker compose exec -T controller python scripts/test_concurrency_live.py
 docker compose exec -T controller python scripts/test_rf3_allocation_live.py
 ```
 
+### Cenários de falha automatizados
+
+Executados no host, com o cluster no ar e os cinco storages `HEALTHY`. Os scripts param e religam os contêineres, encerram com código 1 se o comportamento esperado não ocorrer e religam o nó mesmo quando o cenário falha no meio.
+
+```bash
+# Queda e retorno de um nó: tempo até SUSPECT/DEAD e de volta a HEALTHY
+python tests/failures/node_failure.py --node storage-3 --runs 3
+
+# Queda de um nó com réplica: re-replicação até N=3, SHA-256 do download e reconciliação no retorno
+python tests/failures/recovery.py --runs 3 --size 4194304
+```
+
+Os tempos vão para `tests/results/` (JSON por execução e CSV acumulado); `--out docs/evidencias/parte1` grava uma execução como evidência. O timeout esperado segue `NODE_TIMEOUT_SECONDS` do shell ou do `.env`, como o Compose.
+
 ### Resultados registrados na AWS — 17/11/2026
 
 | Ensaio | Evidência observada |
@@ -308,6 +322,6 @@ Os resultados acima foram obtidos na EC2; **não representam medição de desemp
 | :--- | :--- |
 | **Thayla Almeida Figueiredo** | Storage Nodes e persistência física — [PR #9](https://github.com/thejosephantony/Dcomp-Drive/pull/9) |
 | **Joseph Antony dos Santos Leite** | Arquitetura, controlador, integração e implantação — [PR #20](https://github.com/thejosephantony/Dcomp-Drive/pull/20) |
-| **Jeferson Gonzaga dos Santos Filho** | Testes de detecção de falhas e retorno de nó — [PR #7](https://github.com/thejosephantony/Dcomp-Drive/pull/7) |
+| **Jeferson Gonzaga dos Santos Filho** | Esqueleto da CLI e backend simulado — [PR #3](https://github.com/thejosephantony/Dcomp-Drive/pull/3); testes de detecção de falhas e retorno de nó — [PR #7](https://github.com/thejosephantony/Dcomp-Drive/pull/7); cenário automatizado de falha com re-replicação (F06/F09) — [PR #21](https://github.com/thejosephantony/Dcomp-Drive/pull/21) |
 
 **Professor:** Rafael Oliveira Vasconcelos · **Disciplina:** Sistemas Distribuídos · **Universidade Federal de Sergipe**

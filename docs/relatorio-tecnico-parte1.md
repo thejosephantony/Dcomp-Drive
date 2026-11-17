@@ -71,6 +71,16 @@ O SHA-256 é calculado sobre o conteúdo original e validado no upload, download
 
 As evidências detalhadas e os comandos encontram-se em `docs/evidencias/parte1/aws-validacao-integrada-2026-11-17.md` e `scripts/`.
 
+**Falha e re-replicação automatizadas (F06/F09).** O cenário `tests/failures/recovery.py` grava um arquivo aleatório, derruba um storage que guarda réplica, acompanha `/status` e `/files/metadata` até o arquivo voltar a HEALTHY com N=3 sem o nó parado, confere o SHA-256 do download, religa o nó e verifica o arquivo após a reconciliação. Em três execuções no cluster local (Docker Desktop, cinco storages no mesmo host, arquivo de 4 MiB, `NODE_TIMEOUT_SECONDS=6`), todas passaram:
+
+| Execução | Réplicas antes → depois | Degradação | N=3 restabelecido |
+| --- | --- | --- | --- |
+| 1 | storage-1, 2, 3 → 2, 3, 4 | UNDER_REPLICATED em 2,8 s | 4,9 s |
+| 2 | storage-1, 2, 5 → 2, 3, 5 | RECOVERING em 2,2 s | 2,7 s |
+| 3 | storage-1, 2, 4 → 2, 3, 4 | UNDER_REPLICATED em 2,2 s | 4,4 s |
+
+Os tempos contam a partir do fim do `docker compose stop`; o nó voltou a HEALTHY cerca de 0,45 s após ser religado. A detecção isolada (`tests/failures/node_failure.py`) mediu SUSPECT em cerca de 2,8 s e DEAD entre 4,5 e 5,7 s. O reparo começou com o nó ainda SUSPECT, antes de DEAD: a recuperação fica mais rápida, mas uma perda momentânea de heartbeat também gera uma cópia extra. Dados brutos em `docs/evidencias/parte1/recovery-20261117-172735.json` e `recovery.csv`.
+
 ## 6. Conformidade, limitações e dimensionamento
 
 Os RF1 a RF12 possuem implementação e testes compatíveis com o protótipo; os ensaios acima registram o escopo efetivamente observado. O RF4 foi ensaiado anteriormente; a demonstração obrigatória de corrupção ainda precisa constar no vídeo ou ocorrer presencialmente. A entrada de um sexto nó, sem reinício do controlador, ainda não foi demonstrada em teste específico.
@@ -87,7 +97,7 @@ A distinção abaixo identifica contribuições documentadas em *pull requests* 
 | --- | --- | --- |
 | **Thayla Almeida Figueiredo** | Implementação dos Storage Nodes ([PR nº 9](https://github.com/thejosephantony/Dcomp-Drive/pull/9)). | Persistência física, SHA-256, scrubbing e capacidade. |
 | **Joseph Antony dos Santos Leite** | Integração final e documentação da Parte 1 ([PR nº 20](https://github.com/thejosephantony/Dcomp-Drive/pull/20)). | Arquitetura, controlador, PostgreSQL, implantação AWS e integração. |
-| **Jeferson Gonzaga dos Santos Filho** | Automação do ensaio de falha e retorno de nó ([PR nº 7](https://github.com/thejosephantony/Dcomp-Drive/pull/7)). | Testes de recuperação, protocolos de comunicação e apoio à CLI. |
+| **Jeferson Gonzaga dos Santos Filho** | Esqueleto da CLI e backend simulado ([PR nº 3](https://github.com/thejosephantony/Dcomp-Drive/pull/3)); automação do ensaio de falha e retorno de nó ([PR nº 7](https://github.com/thejosephantony/Dcomp-Drive/pull/7)); cenário automatizado de falha com re-replicação e reconciliação, F06/F09 ([PR nº 21](https://github.com/thejosephantony/Dcomp-Drive/pull/21)). | Testes de recuperação, protocolos de comunicação e apoio à CLI. |
 
 A equipe deve conferir a distribuição de responsabilidades com o histórico completo antes da submissão.
 
