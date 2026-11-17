@@ -133,7 +133,10 @@ def status() -> None:
 def drain(node_id: str) -> None:
     """Marca um nó para retirada planejada (sem redistribuição no modo mock)."""
     _call(_backend().drain, node_id)
-    typer.echo(f"OK  nó em drain: {node_id} (redistribuição ainda não implementada no mock)")
+    if os.getenv("DCOMP_BACKEND", "mock").strip().lower() == "http":
+        typer.echo(f"OK  nó em drain: {node_id} (migração automática em andamento)")
+    else:
+        typer.echo(f"OK  nó em drain: {node_id} (redistribuição indisponível no mock)")
 
 
 if __name__ == "__main__":
