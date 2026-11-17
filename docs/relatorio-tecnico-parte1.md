@@ -39,7 +39,7 @@ O plano de controle mantém namespace, versões, alocação, confirmações, hea
 
 **Protocolo REST/JSON:** `POST /files/prepare` recebe `path`, `size_bytes`, `sha256` (64 dígitos hexadecimais) e `replication_factor` opcional. A resposta contém `write_id`, `desired_replicas` e `targets`, com `node_id`, `machine_id`, `disk_id` e `address`. A CLI realiza `PUT /objects/{write_id}` diretamente nos destinos, informando o SHA-256. Cada nó valida o conteúdo, envia ACK com nó/disco/tamanho/hash, e o controlador só executa o commit após N confirmações. A consulta `GET /files/metadata?path=...` informa versão, tamanho, data, hash, estado e localização. `GET /objects/{version_id}` recupera a versão íntegra. O corpo de arquivo usa `application/octet-stream`.
 
-**Política de posicionamento:** escolha de N destinos com `machine_id` distintos, sem repetição de disco, ordenados por capacidade disponível. Considera reservas PENDING/REPAIRING e um teto `MAX_DISK_USAGE_PERCENT`. Se N destinos não estiverem disponíveis, o controlador responde HTTP 507, sem publicar o arquivo. Foram confirmados N=3 e N=2, além das recusas para N=6 e carga acima do espaço disponível.
+**Algoritmo de posicionamento:** (i) obter N de `replication_factor` ou `REPLICATION_FACTOR`; (ii) descartar nós sem heartbeat recente, em `DRAINING` ou sem capacidade após descontar reservas PENDING/REPAIRING e aplicar `MAX_DISK_USAGE_PERCENT`; (iii) ordenar candidatos por espaço livre; e (iv) selecionar N máquinas lógicas e discos distintos. Se faltarem destinos, o controlador responde HTTP 507, sem publicar o arquivo. Foram confirmados N=3 e N=2 e as recusas para N=6 e solicitação acima da capacidade.
 
 **Semântica de concorrência:** gravações criam versões `PENDING`; a versão acessível é a última `COMMITTED`. O PostgreSQL controla conflitos por bloqueios/transações. A consistência é forte para o **ponteiro de versão publicada**, com quórum de escrita **W=N**: nenhuma nova versão aparece ao leitor antes das N confirmações. No ensaio concorrente, duas escritas simultâneas receberam 201 e 409; doze leituras retornaram HTTP 200 e hashes de versões completas.
 
@@ -51,7 +51,7 @@ O SHA-256 é calculado sobre o conteúdo original e validado no upload, download
 
 **AES-256-GCM:** a cifra ocorre no Storage Node antes da persistência. Cada objeto cifrado utiliza nonce aleatório de 96 bits, tag GCM de 128 bits e `object_id` como dado adicional autenticado. A chave de 256 bits é guardada em `ENCRYPTION_KEY_BASE64` no `.env` privado. O hash permanece sobre o texto claro; metadados locais indicam se o objeto é `AES-256-GCM` ou legado sem cifra. Na AWS, a inspeção encontrou `DCD1` no disco, sem o trecho original em texto claro; o download foi idêntico ao original. Não há KMS ou rotação automática; a chave deve ser preservada fora da EC2, em armazenamento seguro.
 
-**Falhas:** heartbeats classificam nós como HEALTHY, SUSPECT e DEAD. A re-replicação prioriza versões com menos réplicas vivas e respeita quantidade máxima de reparos e banda por transferência. O modo DRAINING impede novos posicionamentos e permite a migração das cópias. Ao retornar, o nó envia inventário; o controlador valida a integridade e descarta cópias obsoletas.
+**Algoritmo de detecção e re-replicação:** o monitor compara o último heartbeat com timeouts e classifica nós como HEALTHY, SUSPECT ou DEAD. Quando uma réplica é perdida, (i) prioriza os arquivos com menos réplicas vivas; (ii) escolhe origem íntegra e novo destino elegível em máquina lógica distinta; (iii) copia e confere SHA-256; (iv) registra a substituição nos metadados. `MAX_CONCURRENT_RECOVERIES` e `REPAIR_BANDWIDTH_BYTES_PER_SEC` limitam concorrência e banda por transferência. O modo DRAINING impede novas alocações e migra as cópias. Ao retornar, o nó envia inventário; o controlador valida a integridade e descarta cópias obsoletas.
 
 ## 5. Implementação e resultados na AWS
 
@@ -79,13 +79,17 @@ Todos os storages residem numa única EC2: não há tolerância à perda desse h
 
 O laboratório validou cinco nós e uma quantidade pequena de arquivos. **A Parte 2 poderá avaliar oito nós e mil arquivos pequenos como cenários planejados**, sem que isso represente capacidade já medida ou garantida.
 
-### 6.1 Divisão de tarefas
+### 6.1 Contribuições individuais e divisão de tarefas
 
-- **Thayla Almeida Figueiredo:** implementação dos Storage Nodes, persistência física, SHA-256, scrubbing e capacidade.
-- **Joseph Antony dos Santos Leite:** arquitetura, controlador e metadados, PostgreSQL, implantação na AWS, interface web e integração.
-- **Jeferson Gonzaga dos Santos Filho:** CLI, protocolos de comunicação, recuperação de falhas e testes.
+A distinção abaixo identifica contribuições documentadas em *pull requests* e as áreas de responsabilidade na equipe; não substitui a conferência da autoria de cada commit.
 
-A equipe deve validar a correspondência dessa divisão com a autoria real no histórico Git antes da submissão.
+| Integrante | Contribuição identificável no Git | Responsabilidades na Parte 1 |
+| --- | --- | --- |
+| **Thayla Almeida Figueiredo** | Implementação dos Storage Nodes ([PR nº 9](https://github.com/thejosephantony/Dcomp-Drive/pull/9)). | Persistência física, SHA-256, scrubbing e capacidade. |
+| **Joseph Antony dos Santos Leite** | Integração final e documentação da Parte 1 ([PR nº 20](https://github.com/thejosephantony/Dcomp-Drive/pull/20)). | Arquitetura, controlador, PostgreSQL, implantação AWS e integração. |
+| **Jeferson Gonzaga dos Santos Filho** | Automação do ensaio de falha e retorno de nó ([PR nº 7](https://github.com/thejosephantony/Dcomp-Drive/pull/7)). | Testes de recuperação, protocolos de comunicação e apoio à CLI. |
+
+A equipe deve conferir a distribuição de responsabilidades com o histórico completo antes da submissão.
 
 ## 7. Execução e reprodução
 
