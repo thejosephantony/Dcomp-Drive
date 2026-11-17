@@ -341,14 +341,43 @@ def _is_self_address(target_addr: str) -> bool:
 
 
 def _validate_peer_url(address: str) -> str:
-    """Valida formato de URL de nó remoto e impede auto-replicação."""
-    cleaned = address.strip().rstrip("/")
-    if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
-        raise HTTPException(422, detail="Endereço do nó remoto inválido: deve começar com http:// ou https://")
-    if _is_self_address(cleaned):
-        raise HTTPException(400, detail="Não é permitido replicar para ou a partir do próprio nó de armazenamento")
-    return cleaned
+    """Permite replicação apenas entre destinos explicitamente conhecidos.
 
+    Impede que o endpoint de replicação vire um proxy HTTP para serviços
+    arbitrários (SSRF). Ex.: ALLOWED_STORAGE_PEERS=http://storage-1:9000,...
+    """
+    from urllib.parse import urlsplit
+
+    cleaned = address.strip().rstrip("/")
+    try:
+        parsed = urlsplit(cleaned)
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.hostname
+            or parsed.port is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("URL de nó inválida")
+    except ValueError as exc:
+        raise HTTPException(
+            422, detail="Endereço inválido: use uma URL HTTP(S) de nó com porta explícita"
+        ) from exc
+
+    configured = os.getenv(
+        "ALLOWED_STORAGE_PEERS",
+        ",".join(f"http://storage-{i}:9000" for i in range(1, 6)),
+    )
+    allowed = {item.strip().rstrip("/") for item in configured.split(",") if item.strip()}
+    if cleaned not in allowed:
+        raise HTTPException(403, detail="Destino de replicação não autorizado")
+
+    if _is_self_address(cleaned):
+        raise HTTPException(400, detail="Não é permitido replicar para o próprio nó")
+    return cleaned
 
 @app.post("/objects/{object_id}/replicate", response_model=ReplicateResponse)
 async def replicate_object(object_id: str, payload: ReplicateRequest) -> ReplicateResponse:
@@ -513,6 +542,8 @@ def scrub_status():
 
 @app.post("/objects/{object_id}/corrupt")
 def inject_corruption(object_id: str) -> dict[str, str | bool]:
-    """Endpoint de injeção de corrupção para testes de falha e demonstração."""
+    """Injeção de corrupção habilitada somente em ambientes de teste."""
+    if os.getenv("ENABLE_TEST_ENDPOINTS", "").lower() not in ("1", "true", "yes"):
+        raise HTTPException(404, detail="Endpoint de teste desabilitado")
     store.corrupt_for_testing(object_id)
     return {"object_id": object_id, "corrupted": True}
