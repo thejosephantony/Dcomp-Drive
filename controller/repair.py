@@ -52,12 +52,17 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-def _alive(node: Node, now: datetime) -> bool:
+def _readable(node: Node, now: datetime) -> bool:
+    """DRAINING não recebe novos objetos, mas pode servir como origem."""
     return (
-        node.state == "HEALTHY"
+        node.state in ("HEALTHY", "DRAINING")
         and (now - _aware(node.last_heartbeat)).total_seconds()
         <= float(os.getenv("NODE_TIMEOUT_SECONDS", "6"))
     )
+
+
+def _alive(node: Node, now: datetime) -> bool:
+    return node.state == "HEALTHY" and _readable(node, now)
 
 
 def _claim_timeout() -> int:
@@ -107,6 +112,25 @@ def _claim_one(session: Session, now: datetime | None = None) -> RepairJob | Non
     changed = False
     reservations = _reserved_bytes(session, now)
 
+    # RF5: prioridade por menor quantidade de réplicas vivas.
+    live_count = {}
+    for version in versions:
+        acked = session.scalars(
+            select(Replica).where(
+                Replica.version_id == version.version_id,
+                Replica.state == "ACKED",
+            )
+        ).all()
+        live_count[version.version_id] = sum(
+            1 for item in acked
+            if item.node_id in nodes and _alive(nodes[item.node_id], now)
+        )
+    versions.sort(key=lambda v: (
+        live_count[v.version_id],
+        -(v.replication_factor - live_count[v.version_id]),
+        v.created_at, v.version_id,
+    ))
+
     for version in versions:
         if version.size_bytes > _limit():
             continue
@@ -148,12 +172,18 @@ def _claim_one(session: Session, now: datetime | None = None) -> RepairJob | Non
         ]
         if len(healthy) >= version.replication_factor:
             continue
-        if not healthy or len(healthy) + len(active) >= version.replication_factor:
+        if len(healthy) + len(active) >= version.replication_factor:
             continue
 
-        # Uma origem só serve se for um nó confiável no inventário da rede.
+        # O nó em drain mantém dados legíveis durante a transferência,
+        # mas não conta para o quorum de réplicas definitivas.
         sources = []
-        for replica in healthy:
+        readable = [
+            r for r in replicas
+            if r.state == "ACKED" and r.node_id in nodes
+            and _readable(nodes[r.node_id], now)
+        ]
+        for replica in readable:
             try:
                 sources.append((replica.node_id, _storage_url(nodes[replica.node_id].address)))
             except Exception:
@@ -244,9 +274,20 @@ async def _copy_verified(job: RepairJob) -> bool:
 
         try:
             target = f"{job.target_address}/objects/{job.version_id}"
+            rate = int(os.getenv("REPAIR_BANDWIDTH_BYTES_PER_SEC", "0"))
+            if rate > 0:
+                async def rate_limited():
+                    # Limite de vazão por reparo. Não afeta o gateway normal.
+                    for offset in range(0, len(payload), 65536):
+                        part = payload[offset:offset + 65536]
+                        yield part
+                        await asyncio.sleep(len(part) / rate)
+                transfer = rate_limited()
+            else:
+                transfer = payload
             stored = await client.put(
                 target,
-                content=payload,
+                content=transfer,
                 headers={"X-Expected-Sha256": job.sha256},
             )
             if stored.status_code != 201:
@@ -327,7 +368,7 @@ def _finish_one(session: Session, job: RepairJob, success: bool) -> bool:
 
 
 def _corrupted_cleanup_targets(job: RepairJob) -> list[tuple[str, str]]:
-    """Descobre réplicas corrompidas após a restauração de N cópias válidas."""
+    """Remove réplicas corrompidas ou drenadas após restabelecer N cópias."""
     with SessionLocal() as session:
         version = session.get(FileVersion, job.version_id)
         if version is None or version.status != "COMMITTED":
@@ -350,15 +391,18 @@ def _corrupted_cleanup_targets(job: RepairJob) -> list[tuple[str, str]]:
             return []
         targets = []
         for replica in replicas:
-            if replica.state != "CORRUPTED":
-                continue
             node = nodes.get(replica.node_id)
-            if node is None or not _alive(node, now):
+            if node is None or not _readable(node, now):
+                continue
+            if not (
+                replica.state == "CORRUPTED"
+                or (replica.state == "LOST" and node.state == "DRAINING")
+            ):
                 continue
             try:
                 targets.append((replica.replica_id, _storage_url(node.address)))
             except Exception:
-                logger.warning("corrupt_cleanup_address_rejected node=%s", replica.node_id)
+                logger.warning("retired_cleanup_address_rejected node=%s", replica.node_id)
         return targets
 
 
@@ -369,11 +413,15 @@ def _forget_discarded_replica(job: RepairJob, replica_id: str) -> None:
             select(Replica).where(
                 Replica.replica_id == replica_id,
                 Replica.version_id == job.version_id,
-                Replica.state == "CORRUPTED",
+                Replica.state.in_(("CORRUPTED", "LOST")),
             ).with_for_update()
         )
         if replica is None:
             return
+        if replica.state == "LOST":
+            node = session.get(Node, replica.node_id)
+            if node is None or node.state != "DRAINING":
+                return
         session.delete(replica)
         session.commit()
 
@@ -441,13 +489,20 @@ def _finish_with_session(job: RepairJob, verified: bool) -> bool:
 
 
 async def repair_forever() -> None:
-    """Roda continuamente em segundo plano, sem bloquear o event loop."""
+    """RF5: máximo de reparos simultâneos configurável; cada claim é transacional."""
     interval = max(0.5, float(os.getenv("REPAIR_INTERVAL_SECONDS", "2")))
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            await repair_once()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("repair_monitor_failed")
+    max_concurrent = max(1, int(os.getenv("MAX_CONCURRENT_RECOVERIES", "1")))
+    pending: set[asyncio.Task] = set()
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            pending = {task for task in pending if not task.done()}
+            if len(pending) < max_concurrent:
+                task = asyncio.create_task(repair_once())
+                pending.add(task)
+    except asyncio.CancelledError:
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        raise

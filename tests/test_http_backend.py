@@ -90,7 +90,7 @@ def test_bad_download_never_overwrites_local_file(tmp_path):
     assert existing.read_bytes() == b"ARQUIVO LOCAL IMPORTANTE"
 
 
-def test_http_errors_and_unsupported_drain(tmp_path):
+def test_http_errors_and_drain(tmp_path):
     def handler(request):
         return httpx.Response(507, json={"detail": "nós insuficientes"})
 
@@ -101,7 +101,7 @@ def test_http_errors_and_unsupported_drain(tmp_path):
 
     with pytest.raises(CLIError) as err:
         backend.drain("storage-1")
-    assert err.value.code == "501"
+    assert err.value.code == "507"
 
 
 
@@ -158,3 +158,15 @@ def test_remove_reports_pending_physical_cleanup():
         backend.rm("/exemplo")
     assert err.value.code == "CLEANUP"
     assert "removido do catálogo" in err.value.message
+
+
+
+def test_http_drain_calls_controller():
+    observed = []
+
+    def handler(request: httpx.Request):
+        observed.append((request.method, request.url.path))
+        return httpx.Response(200, json={"state": "DRAINING"})
+
+    HttpBackend(transport=httpx.MockTransport(handler)).drain("storage-2")
+    assert observed == [("POST", "/nodes/storage-2/drain")]

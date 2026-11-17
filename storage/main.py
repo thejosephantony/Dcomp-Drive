@@ -38,7 +38,9 @@ from storage.store import (
     StorageError,
 )
 
-logging.basicConfig(level=logging.INFO)
+from controller.logging_config import configure_logging
+
+configure_logging()
 logger = logging.getLogger(__name__)
 
 NODE_ID = os.environ.get("NODE_ID", "storage-1")

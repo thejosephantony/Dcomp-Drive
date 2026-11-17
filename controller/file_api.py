@@ -297,12 +297,18 @@ def metadata(path: str = Query(...), session: Session = Depends(get_session)) ->
                 node_id=node.node_id, machine_id=node.machine_id,
                 disk_id=replica.disk_id, address=node.address,
             ))
+    repairing = session.scalar(
+        select(func.count(Replica.replica_id))
+        .where(Replica.version_id == version.version_id, Replica.state == "REPAIRING")
+    ) or 0
     state = (
         "HEALTHY" if len(healthy) >= version.replication_factor else
+        "RECOVERING" if healthy and repairing else
         "UNDER_REPLICATED" if healthy else "UNAVAILABLE"
     )
     return FileMetadataResponse(
         path=entry.path, version=version.version, sha256=version.sha256,
+        created_at=version.created_at,
         size_bytes=version.size_bytes,
         replication_factor=version.replication_factor,
         status=state, replicas=healthy,

@@ -34,6 +34,7 @@ class FileMetadata:
     sha256: str
     state: FileState
     replicas: list[ReplicaInfo] = field(default_factory=list)
+    created_at: str | None = None
 
 
 @dataclass

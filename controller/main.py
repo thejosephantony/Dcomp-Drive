@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import re
+import time
 
 import httpx
 from pathlib import Path
@@ -12,21 +13,23 @@ from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from controller.database import get_session
-from controller.file_models import FileEntry, FileVersion, Replica
+from controller.file_models import FileEntry, FileVersion, Replica, Directory
 from controller.file_transfer import _storage_url
-from controller.file_api import router as files_router
+from controller.file_api import router as files_router, metadata
 from controller.namespace_api import router as namespace_router
 from controller.file_transfer import router as transfer_router
 from controller.models import Disk, Node
 from controller.monitor import monitor_forever, recalculate_status
 from controller.repair import repair_forever
-from controller.schemas import ClusterStatus, Heartbeat, NodeRegistration, NodeStatus
+from controller.schemas import ClusterStatus, DiskStatus, Heartbeat, NodeRegistration, NodeStatus
 
-logging.basicConfig(level=logging.INFO)
+from controller.logging_config import configure_logging
+
+configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -50,6 +53,19 @@ app = FastAPI(title="DComp Drive Controller", version="0.2.0", lifespan=lifespan
 app.include_router(files_router)
 app.include_router(transfer_router)
 app.include_router(namespace_router)
+
+_METRIC_START = time.monotonic()
+_REQUEST_COUNTER = {"count": 0, "latency_sum_ms": 0.0}
+
+
+@app.middleware("http")
+async def record_http_latency(request, call_next):
+    started = time.monotonic()
+    try:
+        return await call_next(request)
+    finally:
+        _REQUEST_COUNTER["count"] += 1
+        _REQUEST_COUNTER["latency_sum_ms"] += (time.monotonic() - started) * 1000
 
 
 def _write_disks(session: Session, node: Node, reports) -> None:
@@ -97,7 +113,8 @@ def register(payload: NodeRegistration, session: Session = Depends(get_session))
         node.machine_id = payload.machine_id
         node.address = str(payload.address)
         node.last_heartbeat = datetime.now(timezone.utc)
-        node.state = "HEALTHY"
+        if node.state != "DRAINING":
+            node.state = "HEALTHY"
     _write_disks(session, node, payload.disks)
     session.commit()
     return {"node_id": node.node_id, "state": node.state}
@@ -109,10 +126,63 @@ def heartbeat(node_id: str, payload: Heartbeat, session: Session = Depends(get_s
     if node is None:
         raise HTTPException(404, detail=f"nó não registrado: {node_id}")
     node.last_heartbeat = datetime.now(timezone.utc)
-    node.state = "HEALTHY"
+    if node.state != "DRAINING":
+        node.state = "HEALTHY"
     _write_disks(session, node, payload.disks)
     session.commit()
     return {"node_id": node.node_id, "state": node.state}
+
+
+@app.post("/nodes/{node_id}/drain")
+def drain_node(node_id: str, session: Session = Depends(get_session)) -> dict[str, str]:
+    """RF7: impede novas alocações e inicia migração assíncrona de cópias."""
+    node = session.get(Node, node_id)
+    if node is None:
+        raise HTTPException(404, detail="nó não registrado")
+    if node.state == "DEAD":
+        raise HTTPException(409, detail="nó indisponível para drain planejado")
+    node.state = "DRAINING"
+    session.commit()
+    logger.warning("node_drain_started node=%s", node_id)
+    return {"node_id": node_id, "state": "DRAINING"}
+
+
+def _file_state_counts(session: Session) -> dict[str, int]:
+    counts = {"HEALTHY": 0, "UNDER_REPLICATED": 0,
+              "RECOVERING": 0, "UNAVAILABLE": 0}
+    paths = session.scalars(
+        select(FileEntry.path)
+        .join(FileVersion, FileEntry.current_version_id == FileVersion.version_id)
+        .where(FileVersion.status == "COMMITTED")
+    ).all()
+    for path in paths:
+        state = metadata(path=path, session=session).status
+        counts[state] = counts.get(state, 0) + 1
+    return counts
+
+
+@app.get("/metrics")
+def metrics(session: Session = Depends(get_session)) -> dict:
+    """Métricas simples em JSON, para auditoria de Parte 1 e testes da Parte 2."""
+    from controller.telemetry import counters_snapshot
+    elapsed = max(time.monotonic() - _METRIC_START, 0.001)
+    counts = _file_state_counts(session)
+    replicas = session.execute(
+        select(Replica.state, func.count(Replica.replica_id))
+        .group_by(Replica.state)
+    ).all()
+    total = _REQUEST_COUNTER["count"]
+    return {
+        "uptime_seconds": round(elapsed, 2),
+        "requests_total": total,
+        "request_latency_avg_ms": round(
+            _REQUEST_COUNTER["latency_sum_ms"] / max(total, 1), 3
+        ),
+        "files_by_state": counts,
+        "replicas_by_state": {key: value for key, value in replicas},
+        "repairs_in_progress": sum(num for state, num in replicas if state == "REPAIRING"),
+        **counters_snapshot(elapsed),
+    }
 
 
 @app.get("/status", response_model=ClusterStatus)
@@ -121,7 +191,7 @@ def status(session: Session = Depends(get_session)) -> ClusterStatus:
     recalculate_status(session)
     nodes = session.scalars(select(Node).order_by(Node.node_id)).all()
     output: list[NodeStatus] = []
-    counts = {"HEALTHY": 0, "SUSPECT": 0, "DEAD": 0}
+    counts = {"HEALTHY": 0, "SUSPECT": 0, "DEAD": 0, "DRAINING": 0}
     for node in nodes:
         counts[node.state] = counts.get(node.state, 0) + 1
         output.append(NodeStatus(
@@ -130,8 +200,23 @@ def status(session: Session = Depends(get_session)) -> ClusterStatus:
             last_heartbeat=node.last_heartbeat.isoformat(),
             capacity_bytes=sum(d.capacity_bytes for d in node.disks),
             used_bytes=sum(d.used_bytes for d in node.disks),
+            disks=[
+                DiskStatus(
+                    disk_id=d.disk_id, capacity_bytes=d.capacity_bytes,
+                    used_bytes=d.used_bytes,
+                    free_bytes=max(0, d.capacity_bytes - d.used_bytes),
+                ) for d in node.disks
+            ],
         ))
-    return ClusterStatus(nodes=output, counts=counts)
+    repairing = session.scalar(
+        select(func.count(Replica.replica_id))
+        .where(Replica.state == "REPAIRING")
+    ) or 0
+    return ClusterStatus(
+        nodes=output, counts=counts,
+        files_by_state=_file_state_counts(session),
+        repairs_in_progress=repairing,
+    )
 
 
 # Interface web no mesmo domínio da API: dispensa CORS e servidor adicional.

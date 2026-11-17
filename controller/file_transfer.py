@@ -12,6 +12,7 @@ import os
 from urllib.parse import urlsplit
 
 import httpx
+from controller.telemetry import record_transfer
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -134,6 +135,7 @@ async def upload_content(
                     raise HTTPException(502, f"{target.node_id}: validação física da réplica falhou")
 
         commit(operation.write_id, session)
+        record_transfer(upload_bytes=len(data))
         return metadata(path, session)
 
     except Exception as exc:
@@ -191,6 +193,7 @@ async def download_content(
                 ):
                     logger.error("replica_digest_mismatch node=%s path=%s", replica.node_id, path)
                     continue
+                record_transfer(download_bytes=len(data))
                 return Response(
                     content=data,
                     media_type="application/octet-stream",

@@ -15,7 +15,7 @@ from sqlalchemy.orm import sessionmaker
 
 from controller.database import get_session
 from controller.file_api import acknowledge
-from controller.file_models import Directory, FileVersion
+from controller.file_models import Directory, FileEntry, FileVersion
 from controller.file_schemas import ReplicaAck
 from controller.main import app
 from controller.models import Base, Disk, Node
@@ -522,3 +522,90 @@ def test_rf1_remove_reclaims_all_published_versions(cluster):
     with factory() as session:
         assert session.query(FileVersion).count() == 0
     assert client.get("/files/metadata", params={"path": "/versoes-rf1"}).status_code == 404
+
+
+
+def test_drain_migrates_replicas_without_data_loss(cluster, monkeypatch):
+    """RF7: nó em drain não é destino e tem suas cópias realocadas."""
+    import asyncio
+    import controller.repair as repair
+    from controller.file_models import Replica
+
+    client, fake, factory = cluster
+    payload = b"conteudo de drain RF7"
+    put = client.put("/files/content", params={"path": "/drain-rf7.bin"}, content=payload)
+    assert put.status_code == 201, put.text
+    first = put.json()["replicas"][0]["node_id"]
+    with factory() as session:
+        version_id = session.query(FileVersion.version_id).one()[0]
+
+    drained = client.post(f"/nodes/{first}/drain")
+    assert drained.status_code == 200, drained.text
+    assert drained.json()["state"] == "DRAINING"
+
+    report = client.get("/status")
+    assert report.status_code == 200, report.text
+    node = next(n for n in report.json()["nodes"] if n["node_id"] == first)
+    assert node["state"] == "DRAINING"
+    assert node["disks"][0]["free_bytes"] >= 0
+    assert report.json()["repairs_in_progress"] == 0
+    assert report.json()["files_by_state"]["UNDER_REPLICATED"] == 1
+
+    # O heartbeat NÃO pode desfazer o drain em andamento.
+    h = client.post(f"/nodes/{first}/heartbeat", json={"disks": [{
+        "disk_id": f"{first}-disk0", "capacity_bytes": 1024 * 1024,
+        "used_bytes": 0,
+    }]})
+    assert h.status_code == 200
+    assert h.json()["state"] == "DRAINING"
+
+    monkeypatch.setattr(repair, "SessionLocal", factory)
+    assert asyncio.run(repair.repair_once()) is True
+
+    state = client.get("/files/metadata", params={"path": "/drain-rf7.bin"})
+    assert state.status_code == 200
+    assert state.json()["status"] == "HEALTHY"
+    assert len(state.json()["replicas"]) == 3
+    assert first not in {r["node_id"] for r in state.json()["replicas"]}
+    assert (first, version_id) not in fake.objects
+    assert client.get("/files/content", params={"path": "/drain-rf7.bin"}).content == payload
+    with factory() as session:
+        assert session.query(Replica).filter_by(version_id=version_id).count() == 3
+
+
+def test_rf5_repair_prioritizes_fewest_live_replicas(cluster):
+    """RF5: com 1/3 o arquivo tem preferência sobre outro com 2/3."""
+    import controller.repair as repair
+    from controller.file_models import Replica
+
+    client, _fake, factory = cluster
+    assert client.put("/files/content", params={"path": "/menos-critico"}, content=b"a").status_code == 201
+    assert client.put("/files/content", params={"path": "/mais-critico"}, content=b"b").status_code == 201
+    with factory() as session:
+        versions = {file.path: file.current_version_id
+                    for file in session.query(FileEntry).all()}
+        for path, missed in [("/menos-critico", 1), ("/mais-critico", 2)]:
+            replicas = session.query(Replica).filter_by(version_id=versions[path]).order_by(Replica.node_id).all()
+            for replica in replicas[:missed]:
+                replica.state = "LOST"
+        session.commit()
+
+    with factory() as session:
+        job = repair._claim_one(session)
+        assert job is not None
+        assert job.version_id == versions["/mais-critico"]
+
+
+def test_rf11_metrics_exposes_file_states_and_repair_counts(cluster):
+    client, _fake, _factory = cluster
+    upload = client.put("/files/content", params={"path": "/metricas-rf11"}, content=b"OK")
+    assert upload.status_code == 201
+    metrics = client.get("/metrics")
+    assert metrics.status_code == 200, metrics.text
+    data = metrics.json()
+    assert data["files_by_state"]["HEALTHY"] == 1
+    assert data["replicas_by_state"]["ACKED"] == 3
+    assert data["repairs_in_progress"] == 0
+    assert data["requests_total"] >= 1
+    assert data["upload_bytes_total"] >= 2
+    assert data["request_latency_avg_ms"] >= 0

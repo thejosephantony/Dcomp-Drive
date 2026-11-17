@@ -29,6 +29,9 @@ def recalculate_status(session: Session, now: datetime | None = None) -> None:
         if last.tzinfo is None:
             last = last.replace(tzinfo=timezone.utc)
         elapsed = max((now - last).total_seconds(), 0.0)
+        # RF7: o nó segue em drain enquanto enviar heartbeats.
+        if node.state == "DRAINING" and elapsed < NODE_TIMEOUT_SECONDS:
+            continue
         next_state = (
             "DEAD"
             if elapsed >= NODE_TIMEOUT_SECONDS

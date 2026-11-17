@@ -108,6 +108,8 @@ def stat(remote_path: str) -> None:
     typer.echo(f"versão    {meta.version}")
     typer.echo(f"tamanho   {meta.size} bytes")
     typer.echo(f"sha256    {meta.sha256}")
+    if meta.created_at:
+        typer.echo(f"data      {meta.created_at}")
     typer.echo(f"estado    {meta.state.value}")
     for replica in meta.replicas:
         typer.echo(f"réplica   {replica.node_id}  {replica.state.value}")

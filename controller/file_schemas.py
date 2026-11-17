@@ -82,6 +82,7 @@ class WriteStatus(BaseModel):
 class FileMetadataResponse(BaseModel):
     path: str
     version: int
+    created_at: datetime | None = None
     sha256: str
     size_bytes: int
     replication_factor: int

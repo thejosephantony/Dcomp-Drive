@@ -62,6 +62,7 @@ class HttpBackend:
             path=payload["path"],
             version=payload["version"],
             size=payload["size_bytes"],
+            created_at=payload.get("created_at"),
             sha256=payload["sha256"],
             state=FileState(payload["status"]),
             replicas=[
@@ -134,7 +135,7 @@ class HttpBackend:
                 )
                 for n in payload["nodes"]
             ],
-            files_by_state={},  # O controlador ainda não oferece contagem global.
+            files_by_state=payload.get("files_by_state", {}),
         )
 
     @staticmethod
@@ -164,4 +165,4 @@ class HttpBackend:
             )
 
     def drain(self, node_id: str) -> None:
-        self._unsupported("drain")
+        self._request("POST", f"/nodes/{node_id}/drain")
