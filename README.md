@@ -322,6 +322,6 @@ Os resultados acima foram obtidos na EC2; **não representam medição de desemp
 | :--- | :--- |
 | **Thayla Almeida Figueiredo** | Storage Nodes e persistência física — [PR #9](https://github.com/thejosephantony/Dcomp-Drive/pull/9) |
 | **Joseph Antony dos Santos Leite** | Arquitetura, controlador, integração e implantação — [PR #20](https://github.com/thejosephantony/Dcomp-Drive/pull/20) |
-| **Jeferson Gonzaga dos Santos Filho** | Esqueleto da CLI e backend simulado — [PR #3](https://github.com/thejosephantony/Dcomp-Drive/pull/3); testes de detecção de falhas e retorno de nó — [PR #7](https://github.com/thejosephantony/Dcomp-Drive/pull/7); cenário automatizado de falha com re-replicação (F06/F09) |
+| **Jeferson Gonzaga dos Santos Filho** | Esqueleto da CLI e backend simulado — [PR #3](https://github.com/thejosephantony/Dcomp-Drive/pull/3); testes de detecção de falhas e retorno de nó — [PR #7](https://github.com/thejosephantony/Dcomp-Drive/pull/7); cenário automatizado de falha com re-replicação (F06/F09) — [PR #21](https://github.com/thejosephantony/Dcomp-Drive/pull/21) |
 
 **Professor:** Rafael Oliveira Vasconcelos · **Disciplina:** Sistemas Distribuídos · **Universidade Federal de Sergipe**

@@ -97,7 +97,7 @@ A distinção abaixo identifica contribuições documentadas em *pull requests* 
 | --- | --- | --- |
 | **Thayla Almeida Figueiredo** | Implementação dos Storage Nodes ([PR nº 9](https://github.com/thejosephantony/Dcomp-Drive/pull/9)). | Persistência física, SHA-256, scrubbing e capacidade. |
 | **Joseph Antony dos Santos Leite** | Integração final e documentação da Parte 1 ([PR nº 20](https://github.com/thejosephantony/Dcomp-Drive/pull/20)). | Arquitetura, controlador, PostgreSQL, implantação AWS e integração. |
-| **Jeferson Gonzaga dos Santos Filho** | Esqueleto da CLI e backend simulado ([PR nº 3](https://github.com/thejosephantony/Dcomp-Drive/pull/3)); automação do ensaio de falha e retorno de nó ([PR nº 7](https://github.com/thejosephantony/Dcomp-Drive/pull/7)); cenário automatizado de falha com re-replicação e reconciliação (F06/F09). | Testes de recuperação, protocolos de comunicação e apoio à CLI. |
+| **Jeferson Gonzaga dos Santos Filho** | Esqueleto da CLI e backend simulado ([PR nº 3](https://github.com/thejosephantony/Dcomp-Drive/pull/3)); automação do ensaio de falha e retorno de nó ([PR nº 7](https://github.com/thejosephantony/Dcomp-Drive/pull/7)); cenário automatizado de falha com re-replicação e reconciliação, F06/F09 ([PR nº 21](https://github.com/thejosephantony/Dcomp-Drive/pull/21)). | Testes de recuperação, protocolos de comunicação e apoio à CLI. |
 
 A equipe deve conferir a distribuição de responsabilidades com o histórico completo antes da submissão.
 
