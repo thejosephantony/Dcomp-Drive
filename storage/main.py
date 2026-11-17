@@ -128,11 +128,17 @@ async def report_forever() -> None:
 async def scrub_forever() -> None:
     """Execução periódica em segundo plano de scrubbing, quando configurada."""
     if SCRUB_INTERVAL_SECONDS <= 0:
+        logger.info("scrub_background_disabled node=%s (SCRUB_INTERVAL_SECONDS=0)", NODE_ID)
         return
+    logger.info("scrub_background_started node=%s interval=%.1fs", NODE_ID, SCRUB_INTERVAL_SECONDS)
     while True:
-        await asyncio.sleep(SCRUB_INTERVAL_SECONDS)
         try:
+            await asyncio.sleep(SCRUB_INTERVAL_SECONDS)
+            logger.info("scrub_periodic_trigger node=%s", NODE_ID)
             await store.scrub()
+        except asyncio.CancelledError:
+            logger.info("scrub_background_cancelled node=%s", NODE_ID)
+            break
         except Exception:
             logger.exception("periodic_scrub_failed node=%s", NODE_ID)
 
@@ -317,6 +323,33 @@ async def delete_object(object_id: str) -> dict[str, str | bool]:
     return {"object_id": object_id, "deleted": True}
 
 
+def _is_self_address(target_addr: str) -> bool:
+    """Verifica se o endereço alvo aponta para este próprio nó de armazenamento."""
+    cleaned = target_addr.strip().rstrip("/")
+    self_addr = STORAGE_ADDRESS.strip().rstrip("/")
+    if cleaned == self_addr:
+        return True
+    try:
+        from urllib.parse import urlparse
+        target_p = urlparse(cleaned)
+        self_p = urlparse(self_addr)
+        if target_p.hostname in (store.node_id, NODE_ID) and (target_p.port or 9000) == (self_p.port or 9000):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _validate_peer_url(address: str) -> str:
+    """Valida formato de URL de nó remoto e impede auto-replicação."""
+    cleaned = address.strip().rstrip("/")
+    if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
+        raise HTTPException(422, detail="Endereço do nó remoto inválido: deve começar com http:// ou https://")
+    if _is_self_address(cleaned):
+        raise HTTPException(400, detail="Não é permitido replicar para ou a partir do próprio nó de armazenamento")
+    return cleaned
+
+
 @app.post("/objects/{object_id}/replicate", response_model=ReplicateResponse)
 async def replicate_object(object_id: str, payload: ReplicateRequest) -> ReplicateResponse:
     if payload.target_address and payload.source_address:
@@ -325,57 +358,130 @@ async def replicate_object(object_id: str, payload: ReplicateRequest) -> Replica
         raise HTTPException(422, detail="Necessário informar target_address ou source_address")
 
     if payload.target_address:
+        # PUSH: Nó de origem envia objeto local para nó de destino
+        target_addr = _validate_peer_url(payload.target_address)
         meta = store.get_metadata(object_id)
         if meta.status == "CORRUPTED":
             raise HTTPException(409, detail=f"Não é possível replicar objeto corrompido: {object_id}")
-        target_url = f"{payload.target_address.rstrip('/')}/objects/{object_id}"
+
+        # Validação física de integridade local antes de iniciar a transferência
+        is_valid, expected, computed, meta = await store.verify_object_integrity(object_id)
+        if not is_valid:
+            raise HTTPException(409, detail=f"Arquivo local está corrompido (esperado {expected}, obtido {computed}), replicação abortada")
+
+        target_url = f"{target_addr}/objects/{object_id}"
+        logger.info("replicate_push_start node=%s target=%s object_id=%s size=%d", store.node_id, target_addr, object_id, meta.size_bytes)
 
         async def file_stream():
-            _, chunks = await store.get_stream(object_id, verify=True)
+            _, chunks = await store.get_stream(object_id, verify=False)
             async for chunk in chunks:
                 yield chunk
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            headers = {"X-Expected-Sha256": meta.sha256}
-            params = {}
-            if payload.write_id:
-                params["write_id"] = payload.write_id
-            response = await client.put(target_url, content=file_stream(), headers=headers, params=params)
-            if response.status_code not in (200, 201):
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Falha na replicação remota: status={response.status_code} corpo={response.text}",
-                )
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                headers = {
+                    "X-Expected-Sha256": meta.sha256,
+                    "Content-Length": str(meta.size_bytes),
+                }
+                params = {}
+                if payload.write_id:
+                    params["write_id"] = payload.write_id
+                response = await client.put(target_url, content=file_stream(), headers=headers, params=params)
+                if response.status_code not in (200, 201):
+                    logger.error("replicate_push_peer_error target=%s status=%d body=%s", target_addr, response.status_code, response.text)
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Falha na replicação remota ({response.status_code}): {response.text}",
+                    )
 
+                peer_acked = False
+                try:
+                    resp_data = response.json()
+                    peer_acked = bool(resp_data.get("controller_acked", False))
+                except Exception:
+                    pass
+
+        except httpx.TimeoutException as exc:
+            logger.error("replicate_push_timeout target=%s error=%s", target_addr, exc)
+            raise HTTPException(504, detail=f"Timeout na comunicação com o nó remoto: {target_addr}") from exc
+        except (httpx.ConnectError, httpx.NetworkError) as exc:
+            logger.error("replicate_push_connect_error target=%s error=%s", target_addr, exc)
+            raise HTTPException(502, detail=f"Falha de conexão com o nó remoto: {target_addr}") from exc
+
+        logger.info("replicate_push_success node=%s target=%s object_id=%s peer_acked=%s", store.node_id, target_addr, object_id, peer_acked)
         return ReplicateResponse(
             object_id=object_id,
             action="pushed",
-            peer_address=payload.target_address,
+            peer_address=target_addr,
             sha256=meta.sha256,
             size_bytes=meta.size_bytes,
             status="SUCCESS",
-            controller_acked=bool(payload.write_id),
+            controller_acked=peer_acked,
         )
 
     else:
-        source_url = f"{payload.source_address.rstrip('/')}/objects/{object_id}"
-        async with httpx.AsyncClient(timeout=30) as client:
-            async with client.stream("GET", source_url) as resp:
-                if resp.status_code == 404:
-                    raise HTTPException(404, detail="Objeto não encontrado no nó de origem")
-                if resp.status_code != 200:
-                    raise HTTPException(502, detail=f"Erro no nó de origem: status={resp.status_code}")
-                expected_sha = resp.headers.get("X-Sha256")
-                meta = await store.put(object_id, resp.aiter_bytes(), expected_sha256=expected_sha)
+        # PULL: Nó de destino solicita objeto do nó de origem e grava localmente
+        source_addr = _validate_peer_url(payload.source_address)
+        source_url = f"{source_addr}/objects/{object_id}"
+        logger.info("replicate_pull_start node=%s source=%s object_id=%s", store.node_id, source_addr, object_id)
 
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                async with client.stream("GET", source_url) as resp:
+                    if resp.status_code == 404:
+                        logger.error("replicate_pull_not_found source=%s object_id=%s", source_addr, object_id)
+                        raise HTTPException(404, detail=f"Objeto não encontrado no nó de origem: {object_id}")
+                    if resp.status_code != 200:
+                        logger.error("replicate_pull_peer_error source=%s status=%d", source_addr, resp.status_code)
+                        raise HTTPException(502, detail=f"Erro no nó de origem ({resp.status_code})")
+
+                    expected_sha = resp.headers.get("X-Sha256") or payload.expected_sha256
+                    content_len_hdr = resp.headers.get("Content-Length")
+                    expected_size = int(content_len_hdr) if content_len_hdr and content_len_hdr.isdigit() else payload.expected_size_bytes
+
+                    # Idempotência: se este nó já tem o objeto idêntico e saudável, evita re-download
+                    if object_id in store._cache:
+                        existing = store._cache[object_id]
+                        if existing.status == "HEALTHY" and expected_sha and existing.sha256 == expected_sha.lower():
+                            if expected_size is None or existing.size_bytes == expected_size:
+                                logger.info("replicate_pull_already_exists node=%s object_id=%s", store.node_id, object_id)
+                                acked = False
+                                if payload.write_id:
+                                    acked = await notify_controller_ack(payload.write_id, existing.sha256, existing.size_bytes)
+                                return ReplicateResponse(
+                                    object_id=object_id,
+                                    action="pulled",
+                                    peer_address=source_addr,
+                                    sha256=existing.sha256,
+                                    size_bytes=existing.size_bytes,
+                                    status="ALREADY_EXISTS",
+                                    controller_acked=acked,
+                                )
+
+                    meta = await store.put(
+                        object_id=object_id,
+                        stream=resp.aiter_bytes(),
+                        expected_sha256=expected_sha,
+                        content_length=expected_size,
+                    )
+
+        except httpx.TimeoutException as exc:
+            logger.error("replicate_pull_timeout source=%s error=%s", source_addr, exc)
+            raise HTTPException(504, detail=f"Timeout na comunicação com o nó remoto: {source_addr}") from exc
+        except (httpx.ConnectError, httpx.NetworkError) as exc:
+            logger.error("replicate_pull_connect_error source=%s error=%s", source_addr, exc)
+            raise HTTPException(502, detail=f"Falha de conexão com o nó remoto: {source_addr}") from exc
+
+        # Confirmação efetiva do ACK junto ao controlador após persistência física
         acked = False
         if payload.write_id:
             acked = await notify_controller_ack(payload.write_id, meta.sha256, meta.size_bytes)
 
+        logger.info("replicate_pull_success node=%s source=%s object_id=%s controller_acked=%s", store.node_id, source_addr, object_id, acked)
         return ReplicateResponse(
             object_id=object_id,
             action="pulled",
-            peer_address=payload.source_address,
+            peer_address=source_addr,
             sha256=meta.sha256,
             size_bytes=meta.size_bytes,
             status="SUCCESS",

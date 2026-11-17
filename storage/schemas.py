@@ -60,6 +60,8 @@ class ReplicateRequest(BaseModel):
     target_address: str | None = None
     source_address: str | None = None
     write_id: str | None = None
+    expected_sha256: str | None = None
+    expected_size_bytes: int | None = None
 
 
 class ReplicateResponse(BaseModel):
@@ -81,6 +83,7 @@ class ScrubReport(BaseModel):
     corrupted_objects: int
     corrupted_ids: list[str]
     duration_seconds: float
+    timestamp: str | None = None
 
 
 class StorageStatus(BaseModel):

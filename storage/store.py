@@ -167,6 +167,15 @@ class ObjectStore:
                 except Exception:
                     logger.exception("Falha ao reconciliar objeto órfão: %s", obj_file)
 
+        # 3. Carrega último relatório de scrubbing se persistido
+        scrub_file = self.data_dir / "scrub_report.json"
+        if scrub_file.exists():
+            try:
+                report_data = json.loads(scrub_file.read_text(encoding="utf-8"))
+                self.last_scrub_report = ScrubReport(**report_data)
+            except Exception:
+                logger.warning("Falha ao carregar relatório de scrubbing persistido: %s", scrub_file)
+
     def _lock_for(self, object_id: str) -> asyncio.Lock:
         return self._locks[object_id]
 
@@ -356,6 +365,19 @@ class ObjectStore:
             logger.info("delete_object_success node=%s object_id=%s", self.node_id, object_id)
             return True
 
+    def _save_scrub_report(self, report: ScrubReport) -> None:
+        """Persiste em disco o último relatório de scrubbing para sobreviver a reinicializações."""
+        try:
+            tmp_report = self.tmp_dir / f"scrub_{uuid.uuid4().hex}.tmp"
+            with open(tmp_report, "w", encoding="utf-8") as f:
+                f.write(report.model_dump_json(indent=2))
+                _sync_file(f)
+            target = self.data_dir / "scrub_report.json"
+            tmp_report.replace(target)
+            _sync_dir(self.data_dir)
+        except Exception:
+            logger.warning("Falha ao persistir relatório de scrubbing em disco")
+
     async def scrub(self, specific_object_id: str | None = None) -> ScrubReport:
         """Executa verificação periódica de integridade (scrubbing) sobre os objetos."""
         start_time = time.monotonic()
@@ -368,38 +390,49 @@ class ObjectStore:
         now_str = datetime.now(timezone.utc).isoformat()
 
         for obj_id in targets:
-            async with self._lock_for(obj_id):
-                meta = self._cache.get(obj_id)
-                if meta is None:
-                    continue
+            # Cede a execução para atender outras requisições HTTP sem bloquear o worker da API
+            await asyncio.sleep(0)
 
-                obj_path = self.objects_dir / obj_id
-                if not obj_path.exists():
-                    meta.status = "CORRUPTED"
+            try:
+                async with self._lock_for(obj_id):
+                    meta = self._cache.get(obj_id)
+                    if meta is None:
+                        continue
+
+                    obj_path = self.objects_dir / obj_id
+                    if not obj_path.exists():
+                        meta.status = "CORRUPTED"
+                        meta.last_scrubbed_at = now_str
+                        self._save_metadata(meta)
+                        corrupted_count += 1
+                        corrupted_ids.append(obj_id)
+                        logger.error("scrub_file_missing node=%s object_id=%s", self.node_id, obj_id)
+                        continue
+
+                    current_hash, _ = compute_file_sha256(obj_path)
+
                     meta.last_scrubbed_at = now_str
+                    if current_hash == meta.sha256.lower():
+                        meta.status = "HEALTHY"
+                        healthy_count += 1
+                    else:
+                        meta.status = "CORRUPTED"
+                        corrupted_count += 1
+                        corrupted_ids.append(obj_id)
+                        logger.error(
+                            "scrub_corruption_detected node=%s object_id=%s expected=%s got=%s",
+                            self.node_id,
+                            obj_id,
+                            meta.sha256,
+                            current_hash,
+                        )
                     self._save_metadata(meta)
-                    corrupted_count += 1
+            except Exception as exc:
+                # Falha individual tratada sem abortar a verificação dos outros objetos
+                logger.exception("scrub_object_error node=%s object_id=%s error=%s", self.node_id, obj_id, exc)
+                corrupted_count += 1
+                if obj_id not in corrupted_ids:
                     corrupted_ids.append(obj_id)
-                    continue
-
-                current_hash, _ = compute_file_sha256(obj_path)
-
-                meta.last_scrubbed_at = now_str
-                if current_hash == meta.sha256.lower():
-                    meta.status = "HEALTHY"
-                    healthy_count += 1
-                else:
-                    meta.status = "CORRUPTED"
-                    corrupted_count += 1
-                    corrupted_ids.append(obj_id)
-                    logger.error(
-                        "scrub_corruption_detected node=%s object_id=%s expected=%s got=%s",
-                        self.node_id,
-                        obj_id,
-                        meta.sha256,
-                        current_hash,
-                    )
-                self._save_metadata(meta)
 
         duration = time.monotonic() - start_time
         report = ScrubReport(
@@ -411,8 +444,10 @@ class ObjectStore:
             corrupted_objects=corrupted_count,
             corrupted_ids=corrupted_ids,
             duration_seconds=round(duration, 4),
+            timestamp=now_str,
         )
         self.last_scrub_report = report
+        self._save_scrub_report(report)
         logger.info(
             "scrub_completed node=%s scanned=%d healthy=%d corrupted=%d duration=%.4fs",
             self.node_id,
