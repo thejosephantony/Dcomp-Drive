@@ -2,10 +2,13 @@
 
 import asyncio
 import logging
+from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
@@ -121,3 +124,14 @@ def status(session: Session = Depends(get_session)) -> ClusterStatus:
             used_bytes=sum(d.used_bytes for d in node.disks),
         ))
     return ClusterStatus(nodes=output, counts=counts)
+
+
+# Interface web no mesmo domínio da API: dispensa CORS e servidor adicional.
+WEB_ROOT = Path(__file__).resolve().parent / "web"
+app.mount("/ui", StaticFiles(directory=str(WEB_ROOT)), name="dashboard-assets")
+
+
+@app.get("/", include_in_schema=False)
+def dashboard() -> FileResponse:
+    """Painel do DComp Drive (uso de laboratório, sem autenticação)."""
+    return FileResponse(WEB_ROOT / "index.html")

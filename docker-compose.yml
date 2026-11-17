@@ -29,7 +29,7 @@ services:
       REPAIR_CLAIM_SECONDS: ${REPAIR_CLAIM_SECONDS:-180}
       MAX_DISK_USAGE_PERCENT: ${MAX_DISK_USAGE_PERCENT:-90}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy

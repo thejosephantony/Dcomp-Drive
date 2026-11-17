@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#09111e">
+  <meta name="description" content="DComp Drive - painel de monitoramento e arquivos distribuídos.">
+  <title>DComp Drive | Painel</title>
+  <link rel="stylesheet" href="/ui/styles.css">
+  <script src="/ui/app.js" defer></script>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="DComp Drive - início">
+        <span class="brand-mark" aria-hidden="true">D</span>
+        <span><strong>DComp Drive</strong><small>Distributed storage</small></span>
+      </a>
+      <div class="side-label">WORKSPACE</div>
+      <nav class="nav" aria-label="Navegação principal">
+        <a href="#overview" class="nav-link active"><span aria-hidden="true">◈</span> Visão geral</a>
+        <a href="#files" class="nav-link"><span aria-hidden="true">▤</span> Arquivos</a>
+        <a href="#nodes" class="nav-link"><span aria-hidden="true">▦</span> Storage Nodes</a>
+      </nav>
+      <div class="sidebar-bottom">
+        <span class="side-label">AMBIENTE</span>
+        <div class="env-tag"><span class="status-dot"></span> AWS EC2 · Laboratório</div>
+        <p>Controlador FastAPI, PostgreSQL e cinco nós Docker em uma única instância.</p>
+        <p>Use o túnel SSH. Não exponha a API à internet.</p>
+      </div>
+    </aside>
+
+    <main class="main" id="overview">
+      <header class="topbar">
+        <div class="breadcrumb">DComp Drive <span>/</span> Dashboard</div>
+        <div class="top-actions">
+          <span id="last-updated" class="last-updated">Aguardando dados...</span>
+          <button id="refresh" class="button button-quiet" type="button">↻ Atualizar</button>
+        </div>
+      </header>
+
+      <div class="content">
+        <div class="heading">
+          <div>
+            <div class="eyebrow">CENTRAL DE CONTROLE</div>
+            <h1>Visão geral do cluster</h1>
+            <p>Acompanhe a integridade, a replicação e seus arquivos em tempo real.</p>
+          </div>
+          <span id="cluster-badge" class="health-badge is-waiting"><span class="status-dot"></span> Conectando</span>
+        </div>
+
+        <div class="metrics" aria-label="Indicadores do cluster">
+          <section class="metric">
+            <span class="metric-caption">Storage Nodes saudáveis</span>
+            <strong id="metric-nodes">—</strong>
+            <span class="metric-foot">Monitoramento por heartbeat</span>
+          </section>
+          <section class="metric">
+            <span class="metric-caption">Arquivos publicados</span>
+            <strong id="metric-files">—</strong>
+            <span class="metric-foot">Metadados no PostgreSQL</span>
+          </section>
+          <section class="metric">
+            <span class="metric-caption">Réplicas do catálogo</span>
+            <strong id="metric-replicas">—</strong>
+            <span class="metric-foot">Réplicas atualmente disponíveis</span>
+          </section>
+          <section class="metric">
+            <span class="metric-caption">Dados armazenados</span>
+            <strong id="metric-storage">—</strong>
+            <span class="metric-foot">Soma dos bytes relatados pelos nós</span>
+          </section>
+        </div>
+
+        <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+        <div class="section-heading" id="files">
+          <div>
+            <h2>Gerenciamento de arquivos</h2>
+            <p>Transfira dados com SHA-256 e replicação automática.</p>
+          </div>
+        </div>
+
+        <div class="work-grid">
+          <section class="panel upload-panel" aria-labelledby="upload-title">
+            <div class="panel-head">
+              <div>
+                <h3 id="upload-title">Enviar arquivo</h3>
+                <p>O controlador confirma as réplicas antes de publicar a versão.</p>
+              </div>
+              <span class="panel-icon" aria-hidden="true">↑</span>
+            </div>
+            <form id="upload-form">
+              <label for="local-file" class="drop-zone">
+                <span class="upload-illustration" aria-hidden="true">↥</span>
+                <strong>Escolher arquivo</strong>
+                <small id="selected-file">Clique aqui para selecionar um arquivo</small>
+                <input id="local-file" type="file" required>
+              </label>
+              <label for="remote-path" class="field-label">Destino no DComp Drive</label>
+              <input id="remote-path" type="text" placeholder="/meu-arquivo.pdf" required spellcheck="false" maxlength="1024">
+              <small class="field-help">Limite do gateway: 32 MiB por arquivo na configuração atual. Use a raiz (/).</small>
+              <button id="upload-button" class="button button-primary full" type="submit">Enviar para o cluster <span aria-hidden="true">→</span></button>
+            </form>
+          </section>
+
+          <section class="panel catalog-panel" aria-labelledby="catalog-title">
+            <div class="panel-head">
+              <div>
+                <h3 id="catalog-title">Arquivos armazenados</h3>
+                <p>Versões publicadas e integridade das réplicas.</p>
+              </div>
+              <span class="panel-icon" aria-hidden="true">▤</span>
+            </div>
+            <label class="sr-only" for="file-filter">Filtrar arquivos</label>
+            <input id="file-filter" class="search" type="search" placeholder="Buscar pelo caminho do arquivo...">
+            <div class="table-scroll">
+              <table class="files-table">
+                <thead><tr><th>Arquivo</th><th>Tamanho</th><th>Réplicas</th><th>Ações</th></tr></thead>
+                <tbody id="file-rows"><tr><td colspan="4" class="empty">Carregando arquivos...</td></tr></tbody>
+              </table>
+            </div>
+            <p class="small-note">Mostrando até 200 arquivos confirmados. A listagem não altera os dados.</p>
+          </section>
+        </div>
+
+        <section id="file-details" class="panel detail-panel" aria-labelledby="detail-title" hidden>
+          <div class="panel-head">
+            <div><h3 id="detail-title">Detalhes do arquivo</h3><p id="detail-path">—</p></div>
+            <button id="close-details" class="button button-quiet" type="button">Fechar</button>
+          </div>
+          <div id="detail-metadata" class="detail-metadata"></div>
+          <h4>Localização das réplicas</h4>
+          <div id="detail-replicas" class="replica-list"></div>
+        </section>
+
+        <div class="section-heading" id="nodes">
+          <div>
+            <h2>Storage Nodes</h2>
+            <p>Saúde dos processos e capacidade informada por heartbeat.</p>
+          </div>
+          <span class="live-label"><span class="status-dot"></span> Atualização automática</span>
+        </div>
+
+        <div id="nodes-grid" class="nodes-grid">
+          <div class="panel empty-nodes">Carregando estado dos nós...</div>
+        </div>
+
+        <footer class="footer">
+          <span>© DComp Drive · Sistemas Distribuídos · UFS</span>
+          <span>Ambiente de laboratório · Dados acessados por gateway HTTP</span>
+        </footer>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

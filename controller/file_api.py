@@ -305,3 +305,24 @@ def metadata(path: str = Query(...), session: Session = Depends(get_session)) ->
         replication_factor=version.replication_factor,
         status=state, replicas=healthy,
     )
+
+
+
+@router.get("/catalog", response_model=list[FileMetadataResponse])
+def catalog(
+    limit: int = Query(200, ge=1, le=200),
+    session: Session = Depends(get_session),
+) -> list[FileMetadataResponse]:
+    """Lista versões publicadas com o estado atual das réplicas.
+
+    Endpoint de leitura para o dashboard. Não expõe versões pendentes.
+    O limite protege a demonstração contra respostas sem paginação.
+    """
+    paths = session.scalars(
+        select(FileEntry.path)
+        .join(FileVersion, FileEntry.current_version_id == FileVersion.version_id)
+        .where(FileVersion.status == "COMMITTED")
+        .order_by(FileEntry.path)
+        .limit(limit)
+    ).all()
+    return [metadata(path=path, session=session) for path in paths]
