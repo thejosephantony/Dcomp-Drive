@@ -1,6 +1,6 @@
 # DComp Drive — roteiro da demonstração obrigatória (até 5 minutos)
 
-**Objetivos exigidos pelo professor:** (1) upload com N réplicas, (2) leitura, (3) queda de nó e recuperação automática, (4) detecção de uma cópia corrompida. O dashboard web é bônus. Gravar a demonstração completa ou combinar apresentação presencial.
+**Objetivos exigidos pelo professor:** (1) upload com N réplicas, (2) leitura, (3) queda de nó e recuperação automática, (4) detecção de uma cópia corrompida. A interface web é um bônus; a gravação pode combinar navegador e terminal para mostrar os mecanismos reais. Gravar a demonstração completa ou combinar apresentação presencial.
 
 ## Pré-requisitos
 
@@ -15,12 +15,33 @@
 
 | Intervalo | Conteúdo | Evidência na tela |
 | --- | --- | --- |
-| 0:00–0:35 | Arquitetura e estado de cinco nós | Diagrama, Docker Compose e /status |
-| 0:35–1:35 | Upload N=3 usando a CLI direta, `stat`, `ls` | Três Storage Nodes distintos |
-| 1:35–2:05 | Download e SHA-256 | Digest original e recuperado iguais |
-| 2:05–3:30 | Parar um Storage Node; reparo automático | DEAD, reparação, retorno a HEALTHY/3 |
-| 3:30–4:40 | Corromper uma réplica descartável; scrub e reparação | Eventos scrub_corruption_detected, repair_completed |
-| 4:40–5:00 | Conclusão | Hash preservado, breve menção às limitações |
+| 0:00–0:35 | Abrir o dashboard web e mostrar arquitetura | Cinco Storage Nodes saudáveis, totais de arquivos/réplicas |
+| 0:35–1:25 | Upload pelo navegador e detalhes do objeto | N=3, três nós distintos, SHA-256 e versão |
+| 1:25–1:55 | Download pelo botão Baixar | SHA-256 conferido automaticamente pelo navegador |
+| 1:55–3:15 | Parar um Storage Node pelo terminal e observar o reparo | Dashboard /status e logs; nova réplica e HEALTHY |
+| 3:15–4:35 | Corromper réplica de arquivo descartável por terminal | Evento de scrub, reparação e íntegro no dashboard |
+| 4:35–5:00 | Conclusão e demonstração de CLI direta (se couber) | Separação plano de controle/dados e limite de uma EC2 |
+
+## Exibição da interface web (bônus)
+
+O dashboard faz parte do próprio controlador FastAPI e é servido em `/`. Ele permite selecionar um arquivo, informar o caminho remoto, enviar, abrir **Detalhes**, consultar SHA-256 e localização das réplicas, baixar o objeto e acompanhar o estado dos cinco storages. A página atualiza os nós automaticamente a cada 10 segundos; o botão **Atualizar** antecipa a consulta.
+
+**Windows PowerShell, terminal próprio para túnel SSH:**
+
+~~~powershell
+ssh -N -o ExitOnForwardFailure=yes -i "$HOME\Downloads\dcomp-drive.pem" -L 8000:127.0.0.1:8000 ubuntu@34.193.62.218
+~~~
+
+Abrir **http://127.0.0.1:8000/** no navegador. O caminho real da chave e o IP do host devem ser confirmados no ambiente antes da gravação. Não expor a porta 8000 no Security Group: a API ainda não tem autenticação. A transferência feita pelo navegador passa por `/files/content` no controlador; para provar a separação dos planos, mostrar também **uma** operação `docker compose run --rm client put/get` ou explicar que a CLI direta envia bytes aos Storage Nodes e que o dashboard é um gateway de conveniência.
+
+**Sequência web sugerida:**
+1. Mostrar cinco storages em HEALTHY.
+2. Escolher um arquivo local descartável, definir caminho remoto novo (por exemplo `/video-web-20261118.txt`) e clicar em **Enviar para o cluster**.
+3. Abrir **Detalhes** do arquivo e apresentar os três storages, discos, versão, tamanho e hash.
+4. Clicar em **Baixar** e mostrar a verificação SHA-256.
+5. Para a falha e a corrupção, alternar ao terminal para executar os comandos e voltar à página para mostrar a recuperação.
+
+**Atenção:** não afirmar que o dashboard mede transferência direta cliente–storage. Nesse fluxo, os bytes passam pelo gateway do controlador, ao contrário da CLI Docker.
 
 ## Comandos de preparação (fora dos cinco minutos)
 
@@ -100,17 +121,17 @@ Se o scrubbing manual mostrar 0 objetos corrompidos, verificar os logs: o scrubb
 
 ## Narrativa sugerida para o vídeo
 
-**0:00–0:35 —** “Nosso projeto usa um controlador FastAPI com metadados no PostgreSQL. Os cinco Storage Nodes compartilham uma EC2, mas mantêm volumes distintos. A CLI troca metadados com o controlador e transfere os bytes diretamente aos nós.”
+**0:00–0:35 —** “Esta é a interface web do DComp Drive. O projeto usa um controlador FastAPI com metadados no PostgreSQL. Os cinco storages compartilham uma EC2, mas mantêm volumes próprios. A interface mostra nós, arquivos e réplicas.”
 
-**0:35–1:35 —** “Ao gravar o arquivo, o controlador reserva três destinos e confirma o arquivo somente após obter três cópias verificadas por SHA-256.” Mostrar stat com três storages distintos.
+**0:35–1:25 —** “Enviamos um arquivo pela interface. O controlador confirma a gravação depois que os três nós registram e verificam suas cópias.” Mostrar **Detalhes** com três storages distintos.
 
-**1:35–2:05 —** “O arquivo baixado mantém exatamente o mesmo hash e o mesmo conteúdo binário do original.” Mostrar SHA-256 e cmp.
+**1:25–1:55 —** “O download valida o SHA-256 e evita devolver conteúdo corrompido.” Mostrar botão **Baixar** e mensagem de integridade.
 
-**2:05–3:30 —** “Interrompemos um nó que contém uma réplica. O monitor detecta a falha e o reparador copia o arquivo a outro nó, recompondo o fator N.” Mostrar status e logs antes de religar o storage.
+**1:55–3:15 —** “Interrompemos um nó que contém uma réplica. O monitor detecta a falha e o reparador copia o arquivo a outro nó, recompondo o fator N.” Mostrar status e logs antes de religar o storage.
 
-**3:30–4:40 —** “Alteramos apenas a cópia de um arquivo descartável; o scrubbing detecta a corrupção, retira a réplica comprometida da contagem e restaura a cópia íntegra em outro nó.” Mostrar logs e novo hash.
+**3:15–4:35 —** “Alteramos apenas a cópia de um arquivo descartável; o scrubbing detecta a corrupção, retira a réplica comprometida da contagem e restaura a cópia íntegra em outro nó.” Mostrar logs e novo hash.
 
-**4:40–5:00 —** “A implementação foi validada com 64 testes e ensaios na AWS. Nossa principal limitação é que os nós lógicos estão na mesma EC2, portanto não demonstramos resiliência à falha do host físico.”
+**4:35–5:00 —** “A implementação foi validada com 64 testes e ensaios na AWS. Nossa principal limitação é que os nós lógicos estão na mesma EC2, portanto não demonstramos resiliência à falha do host físico.”
 
 ## Critérios de sucesso
 
