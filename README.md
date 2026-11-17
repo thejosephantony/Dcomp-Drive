@@ -2,7 +2,7 @@
 
 Sistema distribuído de armazenamento de arquivos, desenvolvido para a **Parte 1** da atividade do Prof. Rafael Oliveira Vasconcelos (entrega: **18/11/2026**). Contém controlador FastAPI, PostgreSQL persistente, cinco nós de armazenamento Docker, replicação N configurável, verificação SHA-256, scrubbing, re-replicação automática, gerenciamento de capacidade, CLI e painel web opcional.
 
-> **Estado de validação em 17/11/2026:** **64 testes aprovados, 1 aviso**, na EC2. Confirmados na AWS: CLI direta com SHA-256, RF5 (falha e reparo), RF6 (retorno e descarte de cópias obsoletas), RF7 (drain), RF8 (concorrência, PASS), RF9 (AES-256-GCM em disco e compatibilidade), RF10 (persistência), RF11 (estado/métricas) e RF12 (logs JSON). RF3 com N diferente de 3 e limites de espaço contam com ensaio dedicado ainda pendente. Cinco storages são contêineres no mesmo host físico. Não confundir o branch em revisão com a versão integrada em main.
+> **Estado de validação em 17/11/2026:** **64 testes aprovados, 1 aviso**, na EC2. Confirmados na AWS: CLI direta com SHA-256, RF5 (falha e reparo), RF6 (retorno e descarte de cópias obsoletas), RF7 (drain), RF8 (concorrência, PASS), RF9 (AES-256-GCM em disco e compatibilidade), RF10 (persistência), RF11 (estado/métricas) e RF12 (logs JSON). RF3 com N=2 e limites de destinos/capacidade passaram em ensaio real (PASS, HTTP 507 nos casos impossíveis). Cinco storages são contêineres no mesmo host físico. Não confundir o branch em revisão com a versão integrada em main.
 
 ## 1. Arquitetura
 
@@ -164,7 +164,7 @@ Os commits devem preservar a autoria real de cada membro. Os PRs da equipe estã
 
 - **Relatório técnico de seis páginas (PDF):** disponível como artefato produzido para a equipe revisar e entregar; fonte editável em [docs/relatorio-tecnico-parte1.md](docs/relatorio-tecnico-parte1.md).
 - **Roteiro de vídeo ou apresentação (até cinco minutos):** [docs/roteiro-demonstracao-parte1.md](docs/roteiro-demonstracao-parte1.md).
-- **Validação de N configurável (RF3) e limite de capacidade (RF7):** `sudo docker compose exec -T controller python scripts/test_rf3_allocation_live.py` (cria somente `/rf3-n2-demo.bin`, valida N=2 com máquinas/discos lógicos distintos e espera HTTP 507 para N=6 e arquivo sem capacidade).
+- **Validação de N configurável (RF3) e limite de capacidade (RF7), <b>PASS na AWS</b>:** `sudo docker compose exec -T controller python scripts/test_rf3_allocation_live.py` (cria somente `/rf3-n2-demo.bin`, valida N=2 com máquinas/discos lógicos distintos e espera HTTP 507 para N=6 e arquivo sem capacidade).
 - **Evidências integradas na EC2 (17/11/2026):** [docs/evidencias/parte1/aws-validacao-integrada-2026-11-17.md](docs/evidencias/parte1/aws-validacao-integrada-2026-11-17.md).
 - **Teste de concorrência ao vivo (RF8):** `sudo docker compose exec -T controller python scripts/test_concurrency_live.py` (cria apenas `/rf8-concorrencia-demo.bin` e imprime resultados JSON).
 - **Evidências de RF1/RF4:** [docs/evidencias/parte1](docs/evidencias/parte1).
