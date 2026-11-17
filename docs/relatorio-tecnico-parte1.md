@@ -76,6 +76,8 @@ PostgreSQL armazena árvore de diretórios, mapa de arquivos, versões, réplica
 - **RF10:** persistência de cinco arquivos após reiniciar a instância EC2, sem perda de metadados ou das três réplicas. `pg_dump` e cinco tarballs de storage foram conferidos.
 - **RF11/RF12:** `/status` mostrou nós, discos, capacidades, estados e reparos; `/metrics` mostrou latência, uptime e contagens. Logs JSON apresentaram `timestamp`, `component`, `event`, `level` e identificadores, incluindo reconciliação e recuperação.
 
+**RF3 e capacidade na EC2:** execução de `scripts/test_rf3_allocation_live.py` → `PASS`; replicação **N=2** em storage-4 e storage-3, discos e machine_ids distintos, leitura com SHA-256 válido. Pedidos de **N=6** e de arquivo maior que a capacidade resultaram em **HTTP 507**. A primeira tentativa foi feita imediatamente após reinicialização do FastAPI e recebeu conexão recusada; após o health check, o teste passou. Os **64 testes** passaram novamente em **7,50 s** (um aviso). Esse ensaio cria mais um arquivo, além dos oito anteriores.
+
 O teste de corrupção anterior do **RF4** detectou uma cópia danificada por scrubbing, recompôs o fator N=3 e preservou o SHA-256 `c538961c3614bf69bafac27ac120868bbbde2d3014b01aa8fbc8c26cd9926f2e`. É necessário incluir a sequência de corrupção/reparação no vídeo ou demonstração presencial.
 
 **Registro detalhado:** `docs/evidencias/parte1/aws-validacao-integrada-2026-11-17.md`. Não confundir testes funcionais com medição de disponibilidade em falhas físicas ou com auditoria de segurança.
@@ -90,7 +92,7 @@ O teste de corrupção anterior do **RF4** detectou uma cópia danificada por sc
 - Limite de banda de recuperação é por tarefa, não garantia de limite agregado.
 - Sem autenticação de usuários, autorização por arquivo, TLS interno, KMS ou rotação criptográfica.
 - A operação `mv` não move diretórios inteiros; somente arquivos.
-- A execução ao vivo comprovou concorrência e AES-GCM, mas **N diferente de 3, rejeição por falta de espaço e entrada de nó adicional** ainda não tinham evidência prática nos primeiros ensaios. Existe script específico de validação RF3/RF7 em `scripts/test_rf3_allocation_live.py` para execução posterior.
+- A execução ao vivo comprovou concorrência e AES-GCM, mas **entrada de nó adicional** ainda não foi demonstrada em ensaio próprio. Já houve execução real do script `scripts/test_rf3_allocation_live.py` com N=2 e rejeição HTTP 507 para N=6/capacidade insuficiente.
 - O relatório documenta N de contêineres distintos no mesmo host, não sobrevivência a falha de máquina física.
 - Os contadores de tráfego do controlador não incluem o caminho direto CLI–Storage.
 
@@ -108,11 +110,11 @@ Todos devem manter contribuições atribuídas corretamente no Git e revisar o r
 | --- | --- |
 | RF1 | Operações de namespace, estatísticas, SHA-256, data, cópias e estados; upload/download comprovados na AWS |
 | RF2 | CLI direta, endpoints REST e interface web opcional |
-| RF3 | N=3 comprovado, nós/discos lógicos distintos; teste de N=2 preparado, ainda pendente de execução |
+| RF3 | N=3 e N=2 comprovados, nós/discos lógicos distintos; N=6 rejeitado por HTTP 507 |
 | RF4 | SHA-256, scrubbing e corrupção/reparação comprovados em ensaio anterior |
 | RF5 | Falha real, substituição e retomada N=3; prioridade e limites têm testes automatizados |
 | RF6 | Registro, retorno e reconciliação comprovados, com cinco cópias obsoletas descartadas |
-| RF7 | Drain completo comprovado; rejeição por capacidade tem script de teste pendente |
+| RF7 | Drain completo comprovado; pedido além da capacidade rejeitado por HTTP 507 |
 | RF8 | Concorrência real: duas escritas (409/201) e 12 leituras íntegras, PASS |
 | RF9 | AES-256-GCM em disco, download idêntico, leitura retrocompatível, testes aprovados |
 | RF10 | Persistência após reinicialização da EC2 e backups conferidos |
