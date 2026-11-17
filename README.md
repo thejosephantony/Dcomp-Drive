@@ -2,7 +2,7 @@
 
 Sistema distribuído de armazenamento de arquivos, desenvolvido para a **Parte 1** da atividade do Prof. Rafael Oliveira Vasconcelos (entrega: **18/11/2026**). Contém controlador FastAPI, PostgreSQL persistente, cinco nós de armazenamento Docker, replicação N configurável, verificação SHA-256, scrubbing, re-replicação automática, gerenciamento de capacidade, CLI e painel web opcional.
 
-> **Estado de validação em 17/11/2026:** **64 testes aprovados, 1 aviso**, na EC2. Confirmados na AWS: CLI direta com SHA-256, RF5 (falha e reparo), RF6 (retorno e descarte de cópias obsoletas), RF7 (drain), RF8 (concorrência, PASS), RF9 (AES-256-GCM em disco e compatibilidade), RF10 (persistência), RF11 (estado/métricas) e RF12 (logs JSON). RF3 com N=2 e limites de destinos/capacidade passaram em ensaio real (PASS, HTTP 507 nos casos impossíveis). Cinco storages são contêineres no mesmo host físico. Não confundir o branch em revisão com a versão integrada em main.
+**Estado de validação em 17/11/2026:** **64 testes aprovados, 1 aviso**, na EC2. Confirmados na AWS: CLI direta com SHA-256, RF5 (falha e reparo), RF6 (retorno e descarte de cópias obsoletas), RF7 (drain), RF8 (concorrência, PASS), RF9 (AES-256-GCM em disco e compatibilidade), RF10 (persistência), RF11 (estado/métricas) e RF12 (logs JSON). RF3 com N=2 e limites de destinos/capacidade passaram em ensaio real (PASS, HTTP 507 nos casos impossíveis). Cinco storages são contêineres no mesmo host físico. Os ensaios foram executados na branch de desenvolvimento antes da integração final.
 
 ## 1. Arquitetura
 
@@ -29,9 +29,9 @@ Requisitos: Docker Engine, Docker Compose v2 e acesso ao Git. No diretório do p
 ~~~bash
 git clone https://github.com/thejosephantony/Dcomp-Drive.git
 cd Dcomp-Drive
-# Enquanto os PRs empilhados não forem integrados à main:
-git fetch origin
-git switch --detach origin/feature/parte1-rf9-direct-client
+# Utilize main após a integração do PR de entrega:
+git switch main
+git pull --ff-only origin main
 
 cp .env.example .env
 # Edite .env e defina POSTGRES_PASSWORD com uma senha privada.
@@ -39,6 +39,11 @@ mkdir -p demo-files
 docker compose config --quiet
 docker compose up -d --build
 docker compose ps
+# O controller migra o banco ao iniciar; aguarde o HTTP de health responder.
+for n in $(seq 1 30); do
+  if curl -fsS http://127.0.0.1:8000/health; then break; fi
+  sleep 2
+done
 curl -fsS http://127.0.0.1:8000/health
 curl -fsS http://127.0.0.1:8000/status
 curl -fsS http://127.0.0.1:8000/metrics
@@ -46,7 +51,7 @@ curl -fsS http://127.0.0.1:8000/metrics
 
 **Não execute `docker compose down -v`**: a opção `-v` apaga o PostgreSQL e os volumes dos objetos. `docker compose stop` ou `docker compose down` sem `-v` preservam os volumes.
 
-O controller publica a porta **apenas em 127.0.0.1:8000**, e os storages comunicam-se na rede Docker privada. Para a interface web remota, abra um túnel SSH até a EC2 e navegue para `http://127.0.0.1:8000/`. Não exponha essas APIs diretamente à internet; ainda não há autenticação de usuários.
+O controller publica a porta **apenas em 127.0.0.1:8000**, e os storages comunicam-se na rede Docker privada. Para a interface web remota, abra um túnel SSH local (`ssh -L 8000:127.0.0.1:8000 ubuntu@<IP_DA_EC2>`) e navegue para `http://127.0.0.1:8000/`. Não exponha essas APIs diretamente à internet; ainda não há autenticação de usuários.
 
 ## 3. Cliente direto (principal, exigência de separação de planos)
 
@@ -124,7 +129,11 @@ python3 -c 'import os,base64;print(base64.b64encode(os.urandom(32)).decode())'
 docker compose up -d --build
 ~~~
 
-A cifra ocorre **nos Storage Nodes** antes da persistência; arquivos cifrados têm nonce aleatório e tag GCM no disco. O **SHA-256 é sobre o texto claro**; leitura e scrubbing de dados cifrados validam o conteúdo decifrado e a tag de autenticação. Metadados registram o modo por objeto; arquivos legados não cifrados continuam legíveis. **Não perca ou troque a chave**: ela é indispensável para ler objetos cifrados. A chave é uma variável de ambiente local de laboratório; não há KMS, rotação automática nem autenticação dos serviços.
+**Depois de produzir objetos cifrados, não regenere a chave**, nem altere `ENCRYPTION_ENABLED` sem planejar a compatibilidade e sem backup. Faça uma cópia privada do `.env` fora da EC2; o backup não deve ser incluído no Git. A cifra ocorre **nos Storage Nodes** antes da persistência; arquivos cifrados têm nonce aleatório e tag GCM no disco. O **SHA-256 é sobre o texto claro**; leitura e scrubbing de dados cifrados validam o conteúdo decifrado e a tag de autenticação. Metadados registram o modo por objeto; arquivos legados não cifrados continuam legíveis. **Não perca ou troque a chave**: ela é indispensável para ler objetos cifrados. A chave é uma variável de ambiente local de laboratório; não há KMS, rotação automática nem autenticação dos serviços.
+
+### Formatos das mensagens de controle
+
+A API REST usa JSON e conteúdo de arquivo `application/octet-stream`. O `POST /files/prepare` recebe, por exemplo, `{ "path": "/documentos/origem.txt", "size_bytes": 20, "sha256": "<hash-hexadecimal-64>", "replication_factor": 3 }` e retorna `write_id`, `desired_replicas` e `targets` (cada destino identifica `node_id`, `machine_id`, `disk_id` e `address`). Os Storage Nodes confirmam nó/disco/tamanho/hash; a publicação é feita em `POST /files/uploads/{write_id}/commit` somente com **W=N** ACKs. O controller não participa do tráfego dos bytes nesse fluxo.
 
 ## 6. Concorrência, consistência e falhas
 
@@ -152,21 +161,21 @@ Evidências anteriores de RF1/RF4 na AWS encontram-se em `docs/evidencias/parte1
 
 ## 8. Colaboração e histórico
 
-- **Joseph Antony:** arquitetura, controlador, PostgreSQL, integração, AWS, interface web e documentação.
-- **Thayla Figueiredo:** nós de armazenamento, persistência física, integridade e capacidade.
-- **Jeferson Gonzaga:** CLI, comunicação, recuperação e testes.
+- **Thayla Almeida Figueiredo:** nós de armazenamento, persistência física, integridade SHA-256, scrubbing e capacidade.
+- **Joseph Antony dos Santos Leite:** arquitetura, controlador, PostgreSQL, implantação na AWS, interface web e integração.
+- **Jeferson Gonzaga dos Santos Filho:** CLI, protocolos de comunicação, recuperação e testes.
 
-Os commits devem preservar a autoria real de cada membro. Os PRs da equipe estão empilhados e devem ser integrados em ordem depois de revisão; não atribua autoria de componentes gerados sem revisão correspondente. As limitações devem aparecer honestamente na apresentação e no relatório técnico.
+Os commits devem preservar a autoria real de cada membro; esta divisão de tarefas deve ser conferida pela equipe antes da submissão. A integração final é feita por **merge commit** (não squash) para preservar histórico e identificar contribuições. O projeto foi avaliado com cinco nós e poucos arquivos de demonstração. Para a Parte 2, planeja-se ensaiar oito nós e mil arquivos pequenos, sem pressupor que esse desempenho esteja validado. As limitações devem aparecer honestamente na apresentação e no relatório técnico.
 
 **Referência:** enunciado oficial "Atividade Prática: Sistema Distribuído de Armazenamento de Arquivos" (UFS, Sistemas Distribuídos, Parte 1).
 
 ## 9. Entregáveis da Parte 1
 
-- **Relatório técnico de seis páginas (PDF):** disponível como artefato produzido para a equipe revisar e entregar; fonte editável em [docs/relatorio-tecnico-parte1.md](docs/relatorio-tecnico-parte1.md).
+- **Relatório técnico ABNT (PDF, 8 páginas):** arquivo separado da entrega, `DComp_Drive_Relatorio_Tecnico_Parte1_Entrega.pdf`. Fonte editável e conteúdo em [docs/relatorio-tecnico-parte1.md](docs/relatorio-tecnico-parte1.md). O PDF deve ser anexado à submissão; o arquivo binário não é gerado automaticamente pelo Compose.
 - **Roteiro de vídeo ou apresentação (até cinco minutos):** [docs/roteiro-demonstracao-parte1.md](docs/roteiro-demonstracao-parte1.md).
-- **Validação de N configurável (RF3) e limite de capacidade (RF7), <b>PASS na AWS</b>:** `sudo docker compose exec -T controller python scripts/test_rf3_allocation_live.py` (cria somente `/rf3-n2-demo.bin`, valida N=2 com máquinas/discos lógicos distintos e espera HTTP 507 para N=6 e arquivo sem capacidade).
+- **Validação de N configurável (RF3) e limite de capacidade (RF7), PASS na AWS:** `sudo docker compose exec -T controller python scripts/test_rf3_allocation_live.py` (cria somente `/rf3-n2-demo.bin`, valida N=2 com máquinas/discos lógicos distintos e espera HTTP 507 para N=6 e arquivo sem capacidade).
 - **Evidências integradas na EC2 (17/11/2026):** [docs/evidencias/parte1/aws-validacao-integrada-2026-11-17.md](docs/evidencias/parte1/aws-validacao-integrada-2026-11-17.md).
 - **Teste de concorrência ao vivo (RF8):** `sudo docker compose exec -T controller python scripts/test_concurrency_live.py` (cria apenas `/rf8-concorrencia-demo.bin` e imprime resultados JSON).
 - **Evidências de RF1/RF4:** [docs/evidencias/parte1](docs/evidencias/parte1).
 
-O relatório não deve declarar as funcionalidades novas como validadas antes da execução de CI, ensaios na EC2 e revisão da equipe.
+**Antes de enviar:** conferir as contribuições individuais no histórico, anexar o PDF de 8 páginas e gravar o vídeo de até 5 minutos (ou combinar apresentação presencial) demonstrando upload N=3, leitura, falha e reparo, e corrupção detectada. Esses itens de submissão não são produzidos automaticamente pelo repositório. Veja [docs/ENTREGA_PARTE1.md](docs/ENTREGA_PARTE1.md).
