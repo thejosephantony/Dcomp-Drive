@@ -2,11 +2,16 @@
 
 **Sistema distribuído de armazenamento de arquivos com replicação, integridade por SHA-256 e recuperação automática de falhas.**
 
-> **Estado do projeto:** implementação incremental. A CLI e seu MockBackend já existem na `main`. O bootstrap do controlador/PostgreSQL e dos cinco nós está em desenvolvimento. As demais operações distribuídas são **planejadas**, não entregues. Consulte a seção de execução e o [guia de bootstrap](docs/bootstrap.md).
+> **Estado da branch `feature/web-dashboard`:** ambiente integrado validado na AWS (controlador, PostgreSQL, cinco Storage Nodes, upload/download HTTP, replicação N=3 e reparo após falha de contêiner). A interface web acrescenta monitoramento, catálogo e transferências por navegador; requer teste final nesta branch. **Não é uma solução pronta para produção**: operações de diretórios/drain no backend HTTP, criptografia e plano de dados direto ainda não estão implementados.
 
 Projeto acadêmico da disciplina de **Sistemas Distribuídos** da **Universidade Federal de Sergipe (UFS)**, sob orientação do professor **Rafael Oliveira Vasconcelos**.
 
 **Repositório:** https://github.com/thejosephantony/Dcomp-Drive
+
+### Interface web para a Parte 1
+
+Esta branch inclui um dashboard no FastAPI em **`http://127.0.0.1:8000/`**, com saúde dos cinco nós, listagem de arquivos publicados, upload/download, hashes SHA-256 e localização das réplicas. O frontend é HTML/CSS/JS sem etapa de build. O `docker-compose.yml` limita a API ao loopback (`127.0.0.1:8000`); na AWS, acesse pelo **túnel SSH**, nunca expondo a porta à internet. Consulte **[docs/web-dashboard.md](docs/web-dashboard.md)** para execução, roteiro de demonstração e limites.
+
 
 ## 1. Visão geral
 
@@ -175,9 +180,9 @@ cd Dcomp-Drive
 git status
 ~~~
 
-### Executar o ambiente de descoberta (após integrar o PR de bootstrap)
+### Executar o ambiente integrado (branch `feature/web-dashboard`)
 
-> O Docker Compose inicializa PostgreSQL, o controlador e cinco nós com registro/heartbeat automático. **Ainda não implementa transferência real de arquivos, replicação nem recuperação de dados.**
+> O Docker Compose inicializa PostgreSQL, o controlador e cinco nós. Nesta branch, o gateway HTTP já realiza transferências, replicação N=3 e reparo automático após falha de contêiner. A interface web usa os mesmos endpoints e a porta 8000 fica restrita ao localhost.
 
 ~~~bash
 cp .env.example .env
@@ -208,9 +213,9 @@ ENCRYPTION_ENABLED=false
 
 Quando a criptografia for habilitada, definir algoritmo de biblioteca consolidada (por exemplo, AES-256-GCM), gerenciamento de chaves, ponto de cifragem e se os hashes se referem ao texto claro ou cifrado. **Não implementar criptografia própria.**
 
-## 8. Interface planejada
+## 8. Interface CLI e API HTTP
 
-Os comandos abaixo já estão disponíveis no **MockBackend local** depois de instalar as dependências com `pip install -r requirements.txt`. Eles **não** se comunicam com o cluster Docker:
+Use `DCOMP_BACKEND=http` e `DCOMP_CONTROLLER_URL=http://127.0.0.1:8000` para executar **put/get/stat/status** contra o cluster real (por túnel SSH no Windows). As demais operações da CLI demonstradas abaixo continuam disponíveis apenas no MockBackend ou ainda não são suportadas no backend HTTP:
 
 ~~~bash
 python -m client.cli put ./trabalho.pdf /documentos/trabalho.pdf
@@ -303,7 +308,7 @@ Enunciado da atividade **Sistema Distribuído de Armazenamento de Arquivos**, di
 
 ### Implementação incremental
 
-O CLI permanece em modo mock (`client/mock_backend.py`) e guarda seus dados em `.dcomp_mock/`. O bootstrap do serviço distribuído cobre **apenas registro de nós, heartbeat, estados e capacidade**. Veja [docs/bootstrap.md](docs/bootstrap.md) para os contratos implementados e os próximos passos da integração.
+O MockBackend (`client/mock_backend.py`) continua disponível para testes isolados, mas o modo `DCOMP_BACKEND=http` opera sobre o cluster para transferências, estado e metadados. O documento [docs/bootstrap.md](docs/bootstrap.md) registra uma etapa histórica anterior à integração; use [docs/web-dashboard.md](docs/web-dashboard.md) para o estado atual da interface.
 
 ### Preparação de arquivos (PR incremental)
 
