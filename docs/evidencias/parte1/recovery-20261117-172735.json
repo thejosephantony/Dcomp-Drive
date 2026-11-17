@@ -1,0 +1,95 @@
+[
+  {
+    "started_at": "2026-11-17T20:26:49.813+00:00",
+    "file_path": "/recovery-20261117-172649-344443.bin",
+    "size_bytes": 4194304,
+    "sha256": "29122a6a49a7bb5c6ffcc3686b6f513717676cb8b9e70fd2527536deab669342",
+    "replication_factor": 3,
+    "replicas_before": [
+      "storage-1",
+      "storage-2",
+      "storage-3"
+    ],
+    "victim": "storage-1",
+    "replicas_after": [
+      "storage-2",
+      "storage-3",
+      "storage-4"
+    ],
+    "dead_after_s": null,
+    "degraded_after_s": 2.746,
+    "states_seen": [
+      "HEALTHY",
+      "UNDER_REPLICATED"
+    ],
+    "recovered_after_s": 4.897,
+    "sha256_after_recovery_ok": true,
+    "node_back_after_s": 0.446,
+    "healthy_after_return": true,
+    "sha256_after_return_ok": true,
+    "passed": true,
+    "error": null
+  },
+  {
+    "started_at": "2026-11-17T20:27:06.075+00:00",
+    "file_path": "/recovery-20261117-172705-323018.bin",
+    "size_bytes": 4194304,
+    "sha256": "a780a35c39c2f397d11a56e57a994ddb45b386190da1fcb9b96ce8e9a8e52fe3",
+    "replication_factor": 3,
+    "replicas_before": [
+      "storage-1",
+      "storage-2",
+      "storage-5"
+    ],
+    "victim": "storage-1",
+    "replicas_after": [
+      "storage-2",
+      "storage-3",
+      "storage-5"
+    ],
+    "dead_after_s": null,
+    "degraded_after_s": 2.188,
+    "states_seen": [
+      "HEALTHY",
+      "RECOVERING"
+    ],
+    "recovered_after_s": 2.727,
+    "sha256_after_recovery_ok": true,
+    "node_back_after_s": 0.465,
+    "healthy_after_return": true,
+    "sha256_after_return_ok": true,
+    "passed": true,
+    "error": null
+  },
+  {
+    "started_at": "2026-11-17T20:27:20.287+00:00",
+    "file_path": "/recovery-20261117-172719-562766.bin",
+    "size_bytes": 4194304,
+    "sha256": "54a1012eb6c902d241b9edf1563ec526f024f599e6ececc3bf2f8917020c3724",
+    "replication_factor": 3,
+    "replicas_before": [
+      "storage-1",
+      "storage-2",
+      "storage-4"
+    ],
+    "victim": "storage-1",
+    "replicas_after": [
+      "storage-2",
+      "storage-3",
+      "storage-4"
+    ],
+    "dead_after_s": null,
+    "degraded_after_s": 2.222,
+    "states_seen": [
+      "HEALTHY",
+      "UNDER_REPLICATED"
+    ],
+    "recovered_after_s": 4.409,
+    "sha256_after_recovery_ok": true,
+    "node_back_after_s": 0.442,
+    "healthy_after_return": true,
+    "sha256_after_return_ok": true,
+    "passed": true,
+    "error": null
+  }
+]
