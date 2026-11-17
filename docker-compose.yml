@@ -24,12 +24,32 @@ services:
       MONITOR_INTERVAL_SECONDS: "2"
       REPLICATION_FACTOR: ${REPLICATION_FACTOR:-3}
       WRITE_TIMEOUT_SECONDS: ${WRITE_TIMEOUT_SECONDS:-300}
+      MAX_TRANSFER_BYTES: ${MAX_TRANSFER_BYTES:-33554432}
+      REPAIR_INTERVAL_SECONDS: ${REPAIR_INTERVAL_SECONDS:-2}
+      REPAIR_CLAIM_SECONDS: ${REPAIR_CLAIM_SECONDS:-180}
+      MAX_CONCURRENT_RECOVERIES: "${MAX_CONCURRENT_RECOVERIES:-1}"
+      REPAIR_BANDWIDTH_BYTES_PER_SEC: "${REPAIR_BANDWIDTH_BYTES_PER_SEC:-0}"
       MAX_DISK_USAGE_PERCENT: ${MAX_DISK_USAGE_PERCENT:-90}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
+
+  # CLI isolada na mesma rede Docker: cliente -> Storage Nodes diretamente.
+  # Não participa do 'docker compose up' por usar um profile opcional.
+  client:
+    profiles: ["cli"]
+    build: .
+    entrypoint: ["python", "-m", "client.cli"]
+    environment:
+      DCOMP_BACKEND: http
+      DCOMP_CONTROLLER_URL: http://controller:8000
+      DCOMP_DIRECT_STORAGE: "true"
+    volumes:
+      - ./demo-files:/work
+    depends_on:
+      - controller
 
   storage-1: &storage
     build: .
@@ -40,6 +60,9 @@ services:
       STORAGE_ADDRESS: http://storage-1:9000
       CONTROLLER_URL: http://controller:8000
       HEARTBEAT_INTERVAL_SECONDS: "2"
+      SCRUB_INTERVAL_SECONDS: "${SCRUB_INTERVAL_SECONDS:-15}"
+      ENCRYPTION_ENABLED: "${ENCRYPTION_ENABLED:-false}"
+      ENCRYPTION_KEY_BASE64: "${ENCRYPTION_KEY_BASE64:-}"
       DATA_DIR: /data
     volumes: [storage1_data:/data]
     depends_on:

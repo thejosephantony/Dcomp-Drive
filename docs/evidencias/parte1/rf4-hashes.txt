@@ -1,0 +1,2 @@
+c538961c3614bf69bafac27ac120868bbbde2d3014b01aa8fbc8c26cd9926f2e  /tmp/rf4-corrupcao.txt
+c538961c3614bf69bafac27ac120868bbbde2d3014b01aa8fbc8c26cd9926f2e  /tmp/rf4-recuperado.txt

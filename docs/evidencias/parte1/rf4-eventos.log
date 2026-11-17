@@ -1,0 +1,4 @@
+storage-1-1   | ERROR:storage.store:scrub_corruption_detected node=storage-1 object_id=fe289f80dc234b8082da9121b0429bb2 expected=c538961c3614bf69bafac27ac120868bbbde2d3014b01aa8fbc8c26cd9926f2e got=b4e36523e8c79218092e8d6e84f3104b7850a183016597b041ce6a413837f749
+controller-1  | WARNING:controller.main:replica_corruption_confirmed node=storage-1 object=fe289f80dc234b8082da9121b0429bb2
+controller-1  | WARNING:controller.repair:repair_completed version=fe289f80dc234b8082da9121b0429bb2 node=storage-5
+controller-1  | INFO:controller.repair:corrupted_replica_discarded version=fe289f80dc234b8082da9121b0429bb2 address=http://storage-1:9000

@@ -1,9 +1,10 @@
 """CLI do DComp Drive (python -m client.cli <comando>).
 
-Por enquanto fala só com o MockBackend (ver client/mock_backend.py). Trocar
-para o backend real vai significar mudar apenas a função _backend() abaixo.
+O backend é selecionado por DCOMP_BACKEND=mock (padrão) ou http.
+No modo HTTP, put/get/stat/status/ls/mkdir/rmdir/mv/rm utilizam o controlador real.
 """
 
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -12,12 +13,18 @@ import typer
 from client.backend import Backend
 from client.errors import CLIError
 from client.mock_backend import MockBackend
+from client.http_backend import HttpBackend
 
-app = typer.Typer(help="DComp Drive — cliente de linha de comando (modo mock)")
+app = typer.Typer(help="DComp Drive — cliente de linha de comando (mock ou HTTP)")
 
 
 def _backend() -> Backend:
-    return MockBackend()
+    mode = os.getenv("DCOMP_BACKEND", "mock").strip().lower()
+    if mode == "http":
+        return HttpBackend()
+    if mode == "mock":
+        return MockBackend()
+    raise typer.BadParameter("DCOMP_BACKEND deve ser mock ou http")
 
 
 def _call(fn: Callable[..., Any], *args: object, **kwargs: object) -> Any:
@@ -101,6 +108,8 @@ def stat(remote_path: str) -> None:
     typer.echo(f"versão    {meta.version}")
     typer.echo(f"tamanho   {meta.size} bytes")
     typer.echo(f"sha256    {meta.sha256}")
+    if meta.created_at:
+        typer.echo(f"data      {meta.created_at}")
     typer.echo(f"estado    {meta.state.value}")
     for replica in meta.replicas:
         typer.echo(f"réplica   {replica.node_id}  {replica.state.value}")
@@ -108,12 +117,14 @@ def stat(remote_path: str) -> None:
 
 @app.command()
 def status() -> None:
-    """Mostra o estado do cluster simulado: nós, uso e arquivos por estado."""
+    """Mostra o estado dos nós no backend configurado."""
     cluster = _call(_backend().status)
     typer.echo("nós:")
     for node in cluster.nodes:
         typer.echo(f"  {node.node_id}  {node.state.value}  {node.used_bytes}/{node.capacity_bytes} bytes")
     typer.echo("arquivos por estado:")
+    if not cluster.files_by_state:
+        typer.echo("  (contagem não disponibilizada)")
     for state, count in cluster.files_by_state.items():
         typer.echo(f"  {state}: {count}")
 
@@ -122,7 +133,10 @@ def status() -> None:
 def drain(node_id: str) -> None:
     """Marca um nó para retirada planejada (sem redistribuição no modo mock)."""
     _call(_backend().drain, node_id)
-    typer.echo(f"OK  nó em drain: {node_id} (redistribuição ainda não implementada no mock)")
+    if os.getenv("DCOMP_BACKEND", "mock").strip().lower() == "http":
+        typer.echo(f"OK  nó em drain: {node_id} (migração automática em andamento)")
+    else:
+        typer.echo(f"OK  nó em drain: {node_id} (redistribuição indisponível no mock)")
 
 
 if __name__ == "__main__":

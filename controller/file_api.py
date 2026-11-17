@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -66,8 +66,13 @@ def choose_targets(session: Session, size_bytes: int, replicas: int, now: dateti
             select(Replica.disk_id, func.sum(FileVersion.size_bytes))
             .join(FileVersion, Replica.version_id == FileVersion.version_id)
             .where(
-                FileVersion.status == "PENDING",
-                FileVersion.expires_at > now,
+                or_(
+                    and_(
+                        FileVersion.status == "PENDING",
+                        FileVersion.expires_at > now,
+                    ),
+                    Replica.state == "REPAIRING",
+                )
             )
             .group_by(Replica.disk_id)
         ).all()
@@ -136,6 +141,8 @@ def prepare(payload: PrepareRequest, session: Session = Depends(get_session)) ->
     parent = payload.path.rsplit("/", 1)[0] or "/"
     if session.get(Directory, parent) is None:
         raise HTTPException(404, detail="diretório pai não existe")
+    if session.get(Directory, payload.path) is not None:
+        raise HTTPException(409, detail="o caminho já é um diretório")
 
     n = required_replicas(payload)
     targets = choose_targets(session, payload.size_bytes, n, now)
@@ -290,13 +297,40 @@ def metadata(path: str = Query(...), session: Session = Depends(get_session)) ->
                 node_id=node.node_id, machine_id=node.machine_id,
                 disk_id=replica.disk_id, address=node.address,
             ))
+    repairing = session.scalar(
+        select(func.count(Replica.replica_id))
+        .where(Replica.version_id == version.version_id, Replica.state == "REPAIRING")
+    ) or 0
     state = (
         "HEALTHY" if len(healthy) >= version.replication_factor else
+        "RECOVERING" if healthy and repairing else
         "UNDER_REPLICATED" if healthy else "UNAVAILABLE"
     )
     return FileMetadataResponse(
         path=entry.path, version=version.version, sha256=version.sha256,
+        created_at=version.created_at, version_id=version.version_id,
         size_bytes=version.size_bytes,
         replication_factor=version.replication_factor,
         status=state, replicas=healthy,
     )
+
+
+
+@router.get("/catalog", response_model=list[FileMetadataResponse])
+def catalog(
+    limit: int = Query(200, ge=1, le=200),
+    session: Session = Depends(get_session),
+) -> list[FileMetadataResponse]:
+    """Lista versões publicadas com o estado atual das réplicas.
+
+    Endpoint de leitura para o dashboard. Não expõe versões pendentes.
+    O limite protege a demonstração contra respostas sem paginação.
+    """
+    paths = session.scalars(
+        select(FileEntry.path)
+        .join(FileVersion, FileEntry.current_version_id == FileVersion.version_id)
+        .where(FileVersion.status == "COMMITTED")
+        .order_by(FileEntry.path)
+        .limit(limit)
+    ).all()
+    return [metadata(path=path, session=session) for path in paths]

@@ -36,6 +36,13 @@ class Heartbeat(BaseModel):
     disks: list[DiskReport] = Field(min_length=1)
 
 
+class DiskStatus(BaseModel):
+    disk_id: str
+    capacity_bytes: int
+    used_bytes: int
+    free_bytes: int
+
+
 class NodeStatus(BaseModel):
     node_id: str
     machine_id: str
@@ -44,8 +51,24 @@ class NodeStatus(BaseModel):
     last_heartbeat: str
     capacity_bytes: int
     used_bytes: int
+    disks: list[DiskStatus] = Field(default_factory=list)
 
 
 class ClusterStatus(BaseModel):
     nodes: list[NodeStatus]
     counts: dict[str, int]
+    files_by_state: dict[str, int] = Field(default_factory=dict)
+    repairs_in_progress: int = 0
+
+
+
+class InventoryObject(BaseModel):
+    object_id: str = Field(min_length=1, max_length=256)
+    sha256: str
+    size_bytes: int = Field(ge=0)
+    status: str
+
+
+class NodeInventory(BaseModel):
+    disk_id: str = Field(min_length=1, max_length=128)
+    objects: list[InventoryObject] = Field(default_factory=list)
