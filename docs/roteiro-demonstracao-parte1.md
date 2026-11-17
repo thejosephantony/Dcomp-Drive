@@ -1,4 +1,4 @@
-# Demonstração obrigatória da Parte 1 — até 5 minutos
+# DComp Drive — roteiro da demonstração obrigatória (até 5 minutos)
 
 **Objetivos exigidos pelo professor:** (1) upload com N réplicas, (2) leitura, (3) queda de nó e recuperação automática, (4) detecção de uma cópia corrompida. O dashboard web é bônus. Gravar a demonstração completa ou combinar apresentação presencial.
 
@@ -8,6 +8,8 @@
 2. Nunca usar `docker compose down -v`. Usar **somente arquivos criados para a demonstração**.
 3. Cinco storages saudáveis antes do ensaio de falha; não derrubar o PostgreSQL nem o controller.
 4. Preparar duas abas do terminal: uma para CLI e outra para acompanhar logs. Evitar publicar tokens, chave de criptografia, `.env` ou dados pessoais no vídeo.
+5. Reservar um arquivo descartável exclusivo para corrupção e verificar se há backup do PostgreSQL e volumes. Não interromper a única réplica íntegra nem derrubar dois nós ao mesmo tempo.
+6. O arquivo de demonstração deve ter um caminho novo: se `/video-parte1.txt` já existir de um ensaio anterior, escolher outro nome e atualizá-lo em todos os comandos.
 
 ## Cronograma sugerido
 
@@ -40,7 +42,8 @@ sudo docker compose run --rm client put /work/video-parte1.txt /video-parte1.txt
 sudo docker compose run --rm client stat /video-parte1.txt
 sudo docker compose run --rm client ls /
 sudo docker compose run --rm client get /video-parte1.txt /work/video-recuperado.txt
-sha256sum demo-files/video-parte1.txt demo-files/video-recuperado.txt
+sudo sha256sum demo-files/video-parte1.txt demo-files/video-recuperado.txt
+sudo cmp demo-files/video-parte1.txt demo-files/video-recuperado.txt
 ```
 
 A CLI direta usa `/files/prepare` e faz os PUT/GET diretamente nos Storage Nodes. O controlador não recebe bytes do arquivo nesse fluxo.
@@ -50,11 +53,14 @@ A CLI direta usa `/files/prepare` e faz os PUT/GET diretamente nos Storage Nodes
 Escolher **um Storage Node que conste nas réplicas do arquivo de demonstração** e interromper somente esse contêiner:
 
 ```bash
-sudo docker compose stop storage-1  # apenas se storage-1 contiver uma réplica
+sudo docker compose stop storage-1  # SOMENTE se storage-1 estiver nas réplicas do arquivo
+sleep 20
 curl -fsS 'http://127.0.0.1:8000/files/metadata?path=%2Fvideo-parte1.txt'
 sudo docker compose logs --since=3m controller | grep -E 'node_state_changed|repair_claimed|repair_completed'
 curl -fsS 'http://127.0.0.1:8000/files/metadata?path=%2Fvideo-parte1.txt'
 sudo docker compose start storage-1
+# Conferir depois de retornar:
+sudo docker compose run --rm client status
 ```
 
 Aguardar o monitor detectar a queda e o reparador recuperar N=3. Se o nó não aparecer nas réplicas, não interrompê-lo; escolher um nó que efetivamente armazena o arquivo.
@@ -71,7 +77,7 @@ curl -fsS -X PUT --data-binary @/tmp/video-corromper.txt \
 curl -fsS 'http://127.0.0.1:8000/files/metadata?path=%2Fvideo-corrupcao.txt' | python3 -m json.tool
 ```
 
-A resposta contém `version_id` e uma lista de `replicas[].node_id`. **Substitua manualmente** `<VERSION_ID>` e `<STORAGE_CONFERIDO>` pelos valores obtidos **para este arquivo**, nunca por IDs de arquivos anteriores:
+A resposta contém `version_id` e uma lista de `replicas[].node_id`. Antes de injetar corrupção, confirmar que as outras duas réplicas permanecem íntegras, que a chave de criptografia está preservada e que o objeto pertence exclusivamente ao arquivo descartável. **Substitua manualmente** `<VERSION_ID>` e `<STORAGE_CONFERIDO>` pelos valores obtidos **para este arquivo**, nunca por IDs de arquivos anteriores:
 
 ```bash
 sudo docker compose exec -T <STORAGE_CONFERIDO> python -c \
@@ -90,7 +96,21 @@ curl -fsS 'http://127.0.0.1:8000/files/content?path=%2Fvideo-corrupcao.txt' \
 sha256sum /tmp/video-corromper.txt /tmp/video-corromper-baixado.txt
 ```
 
-Se o scrubbing manual mostrar 0 objetos corrompidos, verificar os logs: o scrubbing automático pode ter identificado e reparado a corrupção primeiro, como aconteceu no teste anterior de 17/11.
+Se o scrubbing manual mostrar 0 objetos corrompidos, verificar os logs: o scrubbing automático pode ter identificado e reparado a corrupção primeiro, como aconteceu no teste anterior de 17/11. A captura deve mostrar um registro efetivo de corrupção e reparo, não apenas um status HEALTHY posterior.
+
+## Narrativa sugerida para o vídeo
+
+**0:00–0:35 —** “Nosso projeto usa um controlador FastAPI com metadados no PostgreSQL. Os cinco Storage Nodes compartilham uma EC2, mas mantêm volumes distintos. A CLI troca metadados com o controlador e transfere os bytes diretamente aos nós.”
+
+**0:35–1:35 —** “Ao gravar o arquivo, o controlador reserva três destinos e confirma o arquivo somente após obter três cópias verificadas por SHA-256.” Mostrar stat com três storages distintos.
+
+**1:35–2:05 —** “O arquivo baixado mantém exatamente o mesmo hash e o mesmo conteúdo binário do original.” Mostrar SHA-256 e cmp.
+
+**2:05–3:30 —** “Interrompemos um nó que contém uma réplica. O monitor detecta a falha e o reparador copia o arquivo a outro nó, recompondo o fator N.” Mostrar status e logs antes de religar o storage.
+
+**3:30–4:40 —** “Alteramos apenas a cópia de um arquivo descartável; o scrubbing detecta a corrupção, retira a réplica comprometida da contagem e restaura a cópia íntegra em outro nó.” Mostrar logs e novo hash.
+
+**4:40–5:00 —** “A implementação foi validada com 64 testes e ensaios na AWS. Nossa principal limitação é que os nós lógicos estão na mesma EC2, portanto não demonstramos resiliência à falha do host físico.”
 
 ## Critérios de sucesso
 
