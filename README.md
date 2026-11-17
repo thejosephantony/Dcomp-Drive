@@ -1,181 +1,313 @@
-# DComp Drive — Sistemas Distribuídos (UFS)
+# DComp Drive
 
-Sistema distribuído de armazenamento de arquivos, desenvolvido para a **Parte 1** da atividade do Prof. Rafael Oliveira Vasconcelos (entrega: **18/11/2026**). Contém controlador FastAPI, PostgreSQL persistente, cinco nós de armazenamento Docker, replicação N configurável, verificação SHA-256, scrubbing, re-replicação automática, gerenciamento de capacidade, CLI e painel web opcional.
+**Armazenamento distribuído de arquivos com replicação, integridade e recuperação automática.**
 
-**Estado de validação em 17/11/2026:** **64 testes aprovados, 1 aviso**, na EC2. Confirmados na AWS: CLI direta com SHA-256, RF5 (falha e reparo), RF6 (retorno e descarte de cópias obsoletas), RF7 (drain), RF8 (concorrência, PASS), RF9 (AES-256-GCM em disco e compatibilidade), RF10 (persistência), RF11 (estado/métricas) e RF12 (logs JSON). RF3 com N=2 e limites de destinos/capacidade passaram em ensaio real (PASS, HTTP 507 nos casos impossíveis). Cinco storages são contêineres no mesmo host físico. Os ensaios foram executados na branch de desenvolvimento antes da integração final.
+[![Python 3.12](https://img.shields.io/badge/Python-3.12-334155?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-REST-334155?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![PostgreSQL 17](https://img.shields.io/badge/PostgreSQL-17-334155?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Docker Compose](https://img.shields.io/badge/Docker-Compose-334155?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 
-## 1. Arquitetura
+Projeto da disciplina **Sistemas Distribuídos (COMP0470)** da Universidade Federal de Sergipe. Desenvolvido para estudar replicação de dados, detecção de falhas, consistência, recuperação e separação dos planos de controle e de dados.
 
-~~~text
-CLI direta (contêiner "client")
-  ├── controle: REST /files/prepare, /files/metadata, /commit e /status
-  │      ↓
-  │   FastAPI controller ─── PostgreSQL (metadados)
-  │      ↑       ↕ heartbeat/registro/repair
-  └── bytes ───> storage-1 | storage-2 | storage-3 | storage-4 | storage-5
-                    ↳ volumes Docker separados + AES-GCM opcional
+[**Instalação**](#inicialização) · [**Arquitetura**](#arquitetura) · [**Comandos**](#operações-com-arquivos) · [**Interface web**](#interface-web) · [**Testes**](#testes-e-evidências) · [**Documentação**](#documentação)
 
-Navegador (bônus): interface web -> gateway do controlador -> storages.
-~~~
+---
 
-**Plano de controle:** nome, diretório, versões, SHA-256, estado das réplicas, nós, discos, ACKs e orquestração de reparos. **Plano de dados da CLI direta:** transferências byte a byte ocorrem entre cliente e Storage Nodes; o controlador não encaminha o arquivo. O gateway da interface web permanece disponível como modo de conveniência e **não** corresponde ao caminho de dados direto. Cada réplica ocupa nó/disco/máquina lógica distinta.
+## Visão geral
 
-Cada serviço de armazenamento é um **contêiner na mesma EC2**, com volume próprio. Isso simula cinco máquinas lógicas, mas não garante tolerância à perda do host físico.
+| Componente | Ambiente da Parte 1 | Função |
+| :--- | :--- | :--- |
+| Controlador | 1 serviço FastAPI | Namespace, versões, alocação e reparação |
+| Metadados | PostgreSQL 17 | Persistência transacional |
+| Armazenamento | 5 Storage Nodes | Objetos e réplicas em volumes separados |
+| Clientes | CLI e dashboard web | Operações de arquivo e visualização |
+| Replicação | N configurável; padrão 3 | Cópias em nós e discos lógicos distintos |
 
-## 2. Instalação e inicialização
+Um arquivo só é publicado após a confirmação das `N` réplicas exigidas. Em caso de falha, o controlador localiza uma cópia íntegra e recompõe o número de réplicas em outros nós elegíveis. O sistema também detecta corrupção por SHA-256, na leitura e em verificações periódicas (*scrubbing*).
 
-Requisitos: Docker Engine, Docker Compose v2 e acesso ao Git. No diretório do projeto:
+### Recursos implementados
 
-~~~bash
+| Área | Comportamento |
+| :--- | :--- |
+| Arquivos | `put`, `get`, `ls`, `mkdir`, `rmdir`, `mv`, `rm` e `stat` |
+| Integridade | SHA-256 na escrita, leitura e scrubbing |
+| Tolerância a falhas | Heartbeats, estados de nós e re-replicação automática |
+| Descoberta | Registro e reconciliação após retorno de nó |
+| Capacidade | Seleção por espaço livre, limite de uso e `drain` |
+| Concorrência | Versões pendentes; publicação com `W = N` confirmações |
+| Segurança dos dados | AES-256-GCM opcional, configurado nos Storage Nodes |
+| Observabilidade | `/status`, `/metrics` e logs estruturados |
+
+## Arquitetura
+
+O cliente Docker (`client`) separa controle e transferência de arquivos. Ele solicita ao controlador a localização das réplicas e transmite o conteúdo diretamente aos Storage Nodes. O dashboard é uma interface de conveniência: seu upload e download passam pelo gateway HTTP do controlador.
+
+```mermaid
+flowchart LR
+    CLI["CLI<br/>Typer / HTTP"]
+    WEB["Dashboard web<br/>Navegador"]
+
+    subgraph CONTROL["Plano de controle"]
+        API["Controlador<br/>FastAPI"]
+        PG[("PostgreSQL<br/>Metadados")]
+        API <--> PG
+    end
+
+    subgraph DATA["Plano de dados · rede Docker"]
+        ST["5 Storage Nodes<br/>storage-1 · storage-2 · storage-3<br/>storage-4 · storage-5"]
+        VOL[("Volumes persistentes<br/>um por Storage Node")]
+        ST --- VOL
+    end
+
+    CLI -->|"Alocação, namespace, status"| API
+    WEB -->|"REST + gateway de arquivos"| API
+    CLI ==>|"PUT / GET direto"| ST
+    ST -.->|"Heartbeats, ACKs e inventário"| API
+    API -.->|"Comandos de reparação"| ST
+
+    classDef client fill:#edf2f7,stroke:#60758b,color:#182638,stroke-width:1.2px;
+    classDef control fill:#e8eef6,stroke:#315d85,color:#17324e,stroke-width:1.2px;
+    classDef storage fill:#e8f2ef,stroke:#397a66,color:#194d3c,stroke-width:1.2px;
+    class CLI,WEB client;
+    class API,PG control;
+    class ST,VOL storage;
+```
+
+**Plano de controle:** diretórios, versões, hash esperado, alocação, estados de nós, capacidade e tarefas de recuperação. **Plano de dados:** escrita, leitura e cópia dos objetos entre os nós. Cada Storage Node dispõe de um volume Docker independente.
+
+> **Escopo do ambiente:** os cinco storages são contêineres na **mesma instância EC2**, não máquinas físicas independentes. O laboratório demonstra falhas de nós lógicos; não demonstra resistência à perda do host inteiro.
+
+### Protocolo de gravação
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente CLI
+    participant M as Controlador
+    participant DB as PostgreSQL
+    participant S as N Storage Nodes
+
+    C->>M: POST /files/prepare
+    M->>DB: Versão PENDING e reservas
+    M-->>C: write_id e N destinos
+    loop Para cada destino
+        C->>S: PUT /objects/{write_id}
+        S->>S: Persistir e conferir SHA-256
+        S-->>M: ACK da réplica
+        S-->>C: Resultado e hash
+    end
+    C->>M: POST /files/uploads/{write_id}/commit
+    M->>DB: Publicar versão COMMITTED (W = N)
+    M-->>C: Metadados publicados
+```
+
+O controlador recusa a publicação se não houver confirmações suficientes. Leituras consultam apenas versões publicadas e conferem o SHA-256 do conteúdo recebido. Esse modelo prioriza consistência de escrita sobre disponibilidade de novas gravações quando não é possível alcançar `W = N`.
+
+## Inicialização
+
+**Requisitos:** Git, Docker Engine e Docker Compose v2. Os comandos abaixo usam Linux ou macOS; no Ubuntu, acrescente `sudo` aos comandos Docker caso necessário.
+
+### 1. Obter e configurar
+
+```bash
 git clone https://github.com/thejosephantony/Dcomp-Drive.git
 cd Dcomp-Drive
-# Utilize main após a integração do PR de entrega:
-git switch main
-git pull --ff-only origin main
-
 cp .env.example .env
-# Edite .env e defina POSTGRES_PASSWORD com uma senha privada.
 mkdir -p demo-files
+```
+
+Edite `.env` e substitua `POSTGRES_PASSWORD` por uma senha privada. A configuração inicial usa `REPLICATION_FACTOR=3` e `ENCRYPTION_ENABLED=false`.
+
+### 2. Iniciar os serviços
+
+```bash
 docker compose config --quiet
 docker compose up -d --build
 docker compose ps
-# O controller migra o banco ao iniciar; aguarde o HTTP de health responder.
-for n in $(seq 1 30); do
-  if curl -fsS http://127.0.0.1:8000/health; then break; fi
-  sleep 2
-done
+```
+
+O Compose inicializa PostgreSQL, controlador e cinco storages. A primeira execução pode demorar por causa das migrações do banco. Espere o controlador responder:
+
+```bash
 curl -fsS http://127.0.0.1:8000/health
-curl -fsS http://127.0.0.1:8000/status
-curl -fsS http://127.0.0.1:8000/metrics
-~~~
+curl -fsS http://127.0.0.1:8000/status | python3 -m json.tool
+```
 
-**Não execute `docker compose down -v`**: a opção `-v` apaga o PostgreSQL e os volumes dos objetos. `docker compose stop` ou `docker compose down` sem `-v` preservam os volumes.
+A resposta de `/health` deve conter `{"status":"ok"}`. Para acompanhar a inicialização:
 
-O controller publica a porta **apenas em 127.0.0.1:8000**, e os storages comunicam-se na rede Docker privada. Para a interface web remota, abra um túnel SSH local (`ssh -L 8000:127.0.0.1:8000 ubuntu@<IP_DA_EC2>`) e navegue para `http://127.0.0.1:8000/`. Não exponha essas APIs diretamente à internet; ainda não há autenticação de usuários.
+```bash
+docker compose logs -f controller
+```
 
-## 3. Cliente direto (principal, exigência de separação de planos)
+**Persistência:** os volumes preservam banco e objetos entre reinicializações. Não execute `docker compose down -v` em um ambiente com dados que precisam ser mantidos.
 
-O serviço `client` usa um *profile* opcional. Cada comando abaixo cria um contêiner temporário na rede Docker, com acesso a `/work` (pasta `demo-files/` do host). Ele usa `DCOMP_BACKEND=http` e `DCOMP_DIRECT_STORAGE=true` automaticamente.
+## Operações com arquivos
 
-~~~bash
-printf 'Documento DComp Drive\n' > demo-files/origem.txt
+O cliente principal é executado com `docker compose run --rm client`. Esse serviço usa o backend HTTP e `DCOMP_DIRECT_STORAGE=true`, acessando o controlador e os storages pela rede interna do Compose.
 
-# Uma sequência de uso completa em dados descartáveis:
+A pasta local `demo-files/` é montada no cliente como `/work`.
+
+### Exemplo completo
+
+```bash
+# Preparar o arquivo de demonstração no host
+printf 'Arquivo de demonstração do DComp Drive.\n' > demo-files/exemplo.txt
+
+# Criar diretório e enviar
 docker compose run --rm client mkdir /documentos
-docker compose run --rm client put /work/origem.txt /documentos/origem.txt
-docker compose run --rm client ls /
+docker compose run --rm client put /work/exemplo.txt /documentos/exemplo.txt
+
+# Consultar diretório e metadados
 docker compose run --rm client ls /documentos
-docker compose run --rm client stat /documentos/origem.txt
-docker compose run --rm client get /documentos/origem.txt /work/baixado.txt
-sha256sum demo-files/origem.txt demo-files/baixado.txt
-docker compose run --rm client mv /documentos/origem.txt /documentos/novo.txt
-docker compose run --rm client stat /documentos/novo.txt
-docker compose run --rm client rm /documentos/novo.txt
+docker compose run --rm client stat /documentos/exemplo.txt
+
+# Baixar e comparar o conteúdo
+docker compose run --rm client get /documentos/exemplo.txt /work/recuperado.txt
+sudo cmp demo-files/exemplo.txt demo-files/recuperado.txt
+
+# Renomear, remover e consultar o estado final
+docker compose run --rm client mv /documentos/exemplo.txt /documentos/final.txt
+docker compose run --rm client rm /documentos/final.txt
 docker compose run --rm client rmdir /documentos
 docker compose run --rm client status
-~~~
+```
 
-Se `/documentos` já existir, `mkdir` retorna erro de conflito; use outro nome para o ensaio.
+O `sudo cmp` considera que o contêiner pode criar o arquivo recuperado com permissões de `root` no host. Se `/documentos` já existir, use um caminho novo para evitar conflito.
 
-**Drain (RF7):** execute em um laboratório com ao menos N outros nós e capacidade livre:
+### Referência rápida da CLI
 
-~~~bash
-docker compose run --rm client drain storage-1
-curl -fsS http://127.0.0.1:8000/status | python3 -m json.tool
-curl -fsS http://127.0.0.1:8000/metrics | python3 -m json.tool
-# Só depois da migração, opcionalmente devolver o nó à seleção de destinos:
+| Operação | Comando |
+| :--- | :--- |
+| Estado do cluster | `docker compose run --rm client status` |
+| Criar diretório | `docker compose run --rm client mkdir /documentos` |
+| Listar | `docker compose run --rm client ls /documentos` |
+| Enviar | `docker compose run --rm client put /work/a.txt /documentos/a.txt` |
+| Baixar | `docker compose run --rm client get /documentos/a.txt /work/b.txt` |
+| Metadados | `docker compose run --rm client stat /documentos/a.txt` |
+| Mover/renomear arquivo | `docker compose run --rm client mv /documentos/a.txt /documentos/b.txt` |
+| Excluir arquivo | `docker compose run --rm client rm /documentos/b.txt` |
+| Remover diretório vazio | `docker compose run --rm client rmdir /documentos` |
+| Retirar nó de forma planejada | `docker compose run --rm client drain storage-1` |
+
+**Drain:** antes de parar um nó em drenagem, aguarde a reposição das réplicas e confirme o estado em `/status`. Para permitir novas alocações no nó:
+
+```bash
 curl -fsS -X POST http://127.0.0.1:8000/nodes/storage-1/undrain
-~~~
+```
 
-Isso coloca `storage-1` em `DRAINING`; o reparador migra cópias com validação de hash, sem novas alocações nesse nó. Aguarde todas as réplicas voltarem a N antes de removê-lo. **Não faça drain em uma demonstração que dependa do mesmo conjunto de cinco nós sem assegurar capacidade sobrando.**
+## Interface web
 
-### CLI com túnel Windows
+O dashboard acompanha o cluster e oferece upload, download, listagem, detalhes dos arquivos e visualização das réplicas.
 
-O backend HTTP por padrão continua aceitando `put/get` via gateway em `DCOMP_DIRECT_STORAGE=false` para compatibilidade com computadores que não resolvem os nomes privados dos storages. Para demonstrar a arquitetura exigida, use a CLI no serviço Docker `client`, que **fala diretamente** com os Storage Nodes.
+**Acesso no próprio host:** [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
 
-## 4. REST e observabilidade
+O controlador publica a porta somente em `127.0.0.1:8000`. Para acessar uma instância EC2 a partir do computador local, mantenha um túnel SSH aberto:
 
-| Método e rota | Finalidade |
-| --- | --- |
-| `POST /files/prepare` | Reservar N destinos; retorna `write_id` |
-| `POST /files/uploads/{id}/ack` | ACK do nó após gravação |
-| `POST /files/uploads/{id}/commit` | Publicar versão após W = N ACKs |
-| `GET /files/metadata?path=/...` | Hash, tamanho, data, versão, nós, discos e estado |
-| `GET /files/entries?path=/` | Listar diretórios/arquivos |
-| `POST /files/directories` | Criar diretório (`{"path":"/x"}`) |
-| `DELETE /files/directories?path=/x` | Remover diretório vazio |
-| `POST /files/move` | Renomear arquivo (`{"src":"/x","dst":"/y"}`) |
-| `DELETE /files/entry?path=/x` | Excluir arquivo |
-| `POST /nodes/{id}/drain` | Migrar cópias antes de retirar nó |
+```bash
+ssh -N -L 8000:127.0.0.1:8000 -i /caminho/para/chave.pem ubuntu@IP_PUBLICO_DA_EC2
+```
+
+Abra `http://127.0.0.1:8000/` no navegador. **Não abra as portas 8000, 9000 ou 5432 para a internet:** a API não implementa autenticação de usuários.
+
+| No dashboard | O que é apresentado |
+| :--- | :--- |
+| Visão geral | Quantidade de storages saudáveis, arquivos, réplicas e uso de espaço |
+| Arquivos | Upload, listagem, detalhes, SHA-256 e download |
+| Storage Nodes | Estado, identificação do nó e espaço utilizado |
+
+O painel utiliza `PUT/GET /files/content` (gateway do controlador, limite padrão de **32 MiB**). Para demonstrar a separação entre planos, use a CLI Docker, que transfere bytes diretamente aos storages.
+
+## Configuração e políticas
+
+A configuração está em [`.env.example`](.env.example) e [`docker-compose.yml`](docker-compose.yml), sem recompilar o sistema.
+
+| Parâmetro | Valor inicial | Finalidade |
+| :--- | :--- | :--- |
+| `REPLICATION_FACTOR` | `3` | Cópias por arquivo, quando não especificado |
+| `NODE_TIMEOUT_SECONDS` | `6` | Detecção de nós sem heartbeat recente |
+| `MAX_DISK_USAGE_PERCENT` | `90` | Limite de ocupação para alocação |
+| `SCRUB_INTERVAL_SECONDS` | `15` | Intervalo de verificação de integridade |
+| `MAX_CONCURRENT_RECOVERIES` | `1` | Número de reparos simultâneos |
+| `REPAIR_BANDWIDTH_BYTES_PER_SEC` | `0` | Limite por reparo; zero desativa o limite adicional |
+| `ENCRYPTION_ENABLED` | `false` | Habilita cifragem em repouso |
+| `ENCRYPTION_KEY_BASE64` | vazio | Chave privada AES-256-GCM com 32 bytes codificados em Base64 |
+
+### Criptografia e integridade
+
+Quando `ENCRYPTION_ENABLED=true`, os **Storage Nodes** cifram o conteúdo antes de gravá-lo em disco usando AES-256-GCM. O SHA-256 é calculado sobre os bytes originais e conferido após a leitura e a decifragem. Arquivos gravados anteriormente sem cifra continuam legíveis.
+
+A chave deve permanecer no `.env` privado e ter cópia segura **fora da máquina que hospeda o cluster**. Perder ou substituir essa chave pode impedir a recuperação dos objetos cifrados. A implementação não oferece KMS nem rotação automática.
+
+## API e observabilidade
+
+| Endpoint | Finalidade |
+| :--- | :--- |
+| `POST /files/prepare` | Reservar destinos e preparar versão |
+| `POST /files/uploads/{write_id}/commit` | Publicar versão após `W=N` confirmações |
+| `GET /files/metadata?path=...` | Tamanho, hash, data, estado e réplicas |
+| `GET /files/catalog` | Catálogo de arquivos publicados |
+| `POST /nodes/{id}/drain` | Iniciar drenagem planejada |
 | `POST /nodes/{id}/reconcile` | Reconciliar inventário de nó retornando |
-| `GET /status` | Nós/discos, arquivos por estado, reparos ativos |
-| `GET /metrics` | Requisições, latência média, bytes e estados de réplicas |
-| `PUT /files/content`, `GET /files/content` | Gateway legado da interface web |
-| `POST http://storage-N:9000/scrub` | Verificação física explícita |
+| `GET /status` | Nós, discos, estados dos arquivos e reparos ativos |
+| `GET /metrics` | Requisições, latência e contadores operacionais |
 
-Os Storages são serviços privados. O scrubbing periódico é controlado por `SCRUB_INTERVAL_SECONDS` (padrão 15 s). Logs são emitidos em JSON por `LOG_FORMAT=json` (timestamp UTC, componente, evento, identificadores).
+O registro de eventos é feito em JSON estruturado. As métricas de bytes do gateway **não incluem** transferências diretas da CLI aos Storage Nodes.
 
-## 5. Configurações e criptografia (RF9)
+## Testes e evidências
 
-O arquivo `.env.example` documenta opções. Valores operacionais principais: `REPLICATION_FACTOR=3`, `NODE_TIMEOUT_SECONDS=6`, `MAX_DISK_USAGE_PERCENT=90`, `MAX_CONCURRENT_RECOVERIES=1`, `REPAIR_BANDWIDTH_BYTES_PER_SEC=0` (sem limite por reparo) e `SCRUB_INTERVAL_SECONDS=15`.
+Executar a suíte de testes:
 
-Por padrão, **dados não cifrados**: `ENCRYPTION_ENABLED=false`. Para habilitar AES-256-GCM real, gere **localmente** uma chave de 32 bytes e guarde somente no `.env` privado (nunca em Git):
-
-~~~bash
-python3 -c 'import os,base64;print(base64.b64encode(os.urandom(32)).decode())'
-# Copie o resultado para .env:
-# ENCRYPTION_ENABLED=true
-# ENCRYPTION_KEY_BASE64=<valor gerado>
-docker compose up -d --build
-~~~
-
-**Depois de produzir objetos cifrados, não regenere a chave**, nem altere `ENCRYPTION_ENABLED` sem planejar a compatibilidade e sem backup. Faça uma cópia privada do `.env` fora da EC2; o backup não deve ser incluído no Git. A cifra ocorre **nos Storage Nodes** antes da persistência; arquivos cifrados têm nonce aleatório e tag GCM no disco. O **SHA-256 é sobre o texto claro**; leitura e scrubbing de dados cifrados validam o conteúdo decifrado e a tag de autenticação. Metadados registram o modo por objeto; arquivos legados não cifrados continuam legíveis. **Não perca ou troque a chave**: ela é indispensável para ler objetos cifrados. A chave é uma variável de ambiente local de laboratório; não há KMS, rotação automática nem autenticação dos serviços.
-
-### Formatos das mensagens de controle
-
-A API REST usa JSON e conteúdo de arquivo `application/octet-stream`. O `POST /files/prepare` recebe, por exemplo, `{ "path": "/documentos/origem.txt", "size_bytes": 20, "sha256": "<hash-hexadecimal-64>", "replication_factor": 3 }` e retorna `write_id`, `desired_replicas` e `targets` (cada destino identifica `node_id`, `machine_id`, `disk_id` e `address`). Os Storage Nodes confirmam nó/disco/tamanho/hash; a publicação é feita em `POST /files/uploads/{write_id}/commit` somente com **W=N** ACKs. O controller não participa do tráfego dos bytes nesse fluxo.
-
-## 6. Concorrência, consistência e falhas
-
-- Semântica de escrita: versões imutáveis com estado `PENDING` e publicação do ponteiro atual somente após `COMMITTED`; **W = N**.
-- Leituras usam versão publicada e verificam SHA-256; falhas físicas disparam tentativa de outra réplica.
-- PostgreSQL mantém diretórios, versões, réplicas, capacidades e inventário após reinicializações.
-- Heartbeats marcam nós `SUSPECT` e `DEAD`; reparos priorizam arquivos com menos réplicas vivas, respeitam destinos distintos, capacidade e limite configurável.
-- Um nó que retorna registra inventário e o controlador verifica hashes antes de reaproveitar réplicas `LOST`; versões obsoletas conhecidas são descartadas.
-- A consistência é forte para a **publicação de metadados** de uma versão; a cópia física distribuída não participa da transação do PostgreSQL, portanto falhas e concorrência podem criar órfãos ou limpeza pendente. Em termos de CAP, durante partições que impossibilitam W=N prioriza-se consistência de escrita sobre disponibilidade.
-- `mv` de diretórios não é suportado; `rm` faz limpeza física em melhor esforço e não oferece fila persistente de coleta.
-- O caminho direto ainda carrega o arquivo em memória no cliente; não há chunking por objeto nem suporte testado a volumes muito grandes. O limite do gateway web é 32 MiB; a CLI direta não usa esse gateway.
-- Limite de vazão de reparos aplica-se **por transferência**, não à taxa agregada entre vários reparos concorrentes.
-- Sem autenticação/autorizações por usuário, TLS interno, controladores redundantes ou domínios de falha físicos.
-
-## 7. Testes e demonstração da Parte 1
-
-~~~bash
+```bash
 docker compose exec -T controller python -m pytest -q tests
-docker compose logs --tail=120 controller storage-1
-~~~
+```
 
-Evidências anteriores de RF1/RF4 na AWS encontram-se em `docs/evidencias/parte1/`. Os documentos `docs/rf1-namespace.md` e `docs/rf4-corruption-demo.md` descrevem a injeção segura de uma única falha em um arquivo descartável e a verificação de hashes.
+Para um **ambiente de laboratório limpo**, os scripts de integração abaixo verificam concorrência e alocação. Eles criam arquivos de teste com caminhos fixos; evite executá-los repetidamente no mesmo cluster sem remover os respectivos dados descartáveis.
 
-**Roteiro para apresentação de até 5 minutos:** (1) mostrar N=3 após `put`, (2) download e hash, (3) desligar temporariamente um storage e observar `UNDER_REPLICATED → RECOVERING → HEALTHY`, (4) injetar corrupção em uma réplica de arquivo **descartável** e mostrar detecção e nova cópia. Nunca corromper dados de colegas ou desativar o PostgreSQL.
+```bash
+docker compose exec -T controller python scripts/test_concurrency_live.py
+docker compose exec -T controller python scripts/test_rf3_allocation_live.py
+```
 
-## 8. Colaboração e histórico
+### Resultados registrados na AWS — 17/11/2026
 
-- **Thayla Almeida Figueiredo:** nós de armazenamento, persistência física, integridade SHA-256, scrubbing e capacidade.
-- **Joseph Antony dos Santos Leite:** arquitetura, controlador, PostgreSQL, implantação na AWS, interface web e integração.
-- **Jeferson Gonzaga dos Santos Filho:** CLI, protocolos de comunicação, recuperação e testes.
+| Ensaio | Evidência observada |
+| :--- | :--- |
+| Suíte automatizada | **64 testes aprovados**, 1 aviso de dependência |
+| Replicação | `N=2` e `N=3` em nós lógicos distintos |
+| Restrições | HTTP `507` para `N=6` e capacidade insuficiente |
+| Falha de nó | `HEALTHY → SUSPECT → DEAD`; re-replicação concluída |
+| Retorno | Reconciliação do nó e descarte de cinco cópias obsoletas |
+| Drain | Migração das réplicas e reabilitação do nó |
+| Concorrência | Duas escritas (HTTP `201`/`409`), 12 leituras íntegras |
+| Criptografia | AES-256-GCM verificada no armazenamento e download idêntico |
 
-Os commits devem preservar a autoria real de cada membro; esta divisão de tarefas deve ser conferida pela equipe antes da submissão. A integração final é feita por **merge commit** (não squash) para preservar histórico e identificar contribuições. O projeto foi avaliado com cinco nós e poucos arquivos de demonstração. Para a Parte 2, planeja-se ensaiar oito nós e mil arquivos pequenos, sem pressupor que esse desempenho esteja validado. As limitações devem aparecer honestamente na apresentação e no relatório técnico.
+Os resultados acima foram obtidos na EC2; **não representam medição de desempenho nem execução bem-sucedida do GitHub Actions**. Os registros estão em [evidências da Parte 1](docs/evidencias/parte1/aws-validacao-integrada-2026-11-17.md). O ensaio de corrupção e reparação está documentado em [RF4](docs/rf4-corruption-demo.md).
 
-**Referência:** enunciado oficial "Atividade Prática: Sistema Distribuído de Armazenamento de Arquivos" (UFS, Sistemas Distribuídos, Parte 1).
+## Limitações conhecidas
 
-## 9. Entregáveis da Parte 1
+- Os cinco storages compartilham um host EC2 e seu armazenamento subjacente; volumes isolados não equivalem a cinco máquinas físicas.
+- O controlador e o PostgreSQL não possuem redundância automática.
+- A CLI direta e o reparador carregam objetos inteiros em memória; não há fragmentação independente em chunks.
+- O dashboard utiliza o gateway do controlador; somente a CLI Docker segue o caminho direto de dados.
+- A API de laboratório não possui autenticação individual, autorização de arquivos ou TLS interno.
+- Os contadores de tráfego do controlador não agregam as transferências diretas.
+- `mv` atua sobre arquivos, não move árvores completas de diretórios.
 
-- **Relatório técnico ABNT (PDF, 8 páginas):** arquivo separado da entrega, `DComp_Drive_Relatorio_Tecnico_Parte1_Entrega.pdf`. Fonte editável e conteúdo em [docs/relatorio-tecnico-parte1.md](docs/relatorio-tecnico-parte1.md). O PDF deve ser anexado à submissão; o arquivo binário não é gerado automaticamente pelo Compose.
-- **Roteiro de vídeo ou apresentação (até cinco minutos):** [docs/roteiro-demonstracao-parte1.md](docs/roteiro-demonstracao-parte1.md).
-- **Validação de N configurável (RF3) e limite de capacidade (RF7), PASS na AWS:** `sudo docker compose exec -T controller python scripts/test_rf3_allocation_live.py` (cria somente `/rf3-n2-demo.bin`, valida N=2 com máquinas/discos lógicos distintos e espera HTTP 507 para N=6 e arquivo sem capacidade).
-- **Evidências integradas na EC2 (17/11/2026):** [docs/evidencias/parte1/aws-validacao-integrada-2026-11-17.md](docs/evidencias/parte1/aws-validacao-integrada-2026-11-17.md).
-- **Teste de concorrência ao vivo (RF8):** `sudo docker compose exec -T controller python scripts/test_concurrency_live.py` (cria apenas `/rf8-concorrencia-demo.bin` e imprime resultados JSON).
-- **Evidências de RF1/RF4:** [docs/evidencias/parte1](docs/evidencias/parte1).
+## Documentação
 
-**Antes de enviar:** conferir as contribuições individuais no histórico, anexar o PDF de 8 páginas e gravar o vídeo de até 5 minutos (ou combinar apresentação presencial) demonstrando upload N=3, leitura, falha e reparo, e corrupção detectada. Esses itens de submissão não são produzidos automaticamente pelo repositório. Veja [docs/ENTREGA_PARTE1.md](docs/ENTREGA_PARTE1.md).
+| Documento | Conteúdo |
+| :--- | :--- |
+| [Relatório técnico da Parte 1](docs/relatorio-tecnico-parte1.md) | Arquitetura, protocolos, decisões e divisão das tarefas |
+| [Roteiro da demonstração](docs/roteiro-demonstracao-parte1.md) | Apresentação com interface web, falha e corrupção |
+| [Checklist de entrega](docs/ENTREGA_PARTE1.md) | Repositório, relatório, vídeo e conferência final |
+| [Evidências da execução na AWS](docs/evidencias/parte1/aws-validacao-integrada-2026-11-17.md) | Resultados e procedimentos realizados |
+
+### Equipe
+
+| Integrante | Contribuição documentada |
+| :--- | :--- |
+| **Thayla Almeida Figueiredo** | Storage Nodes e persistência física — [PR #9](https://github.com/thejosephantony/Dcomp-Drive/pull/9) |
+| **Joseph Antony dos Santos Leite** | Arquitetura, controlador, integração e implantação — [PR #20](https://github.com/thejosephantony/Dcomp-Drive/pull/20) |
+| **Jeferson Gonzaga dos Santos Filho** | Testes de detecção de falhas e retorno de nó — [PR #7](https://github.com/thejosephantony/Dcomp-Drive/pull/7) |
+
+**Professor:** Rafael Oliveira Vasconcelos · **Disciplina:** Sistemas Distribuídos · **Universidade Federal de Sergipe**
