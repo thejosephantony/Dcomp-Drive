@@ -1,0 +1,62 @@
+# Sessão real na AWS EC2 — 17/11/2026
+# Transcrição relevante dos resultados fornecidos pelo operador.
+
+$ sudo docker compose exec -T controller python -m pytest -q tests
+....................................................                     [100%]
+52 passed, 1 warning in 5.78s
+
+$ dcomp mkdir /rf1-demo-17nov
+OK  diretório criado: /rf1-demo-17nov
+$ dcomp mkdir /rf1-demo-17nov/docs
+OK  diretório criado: /rf1-demo-17nov/docs
+$ dcomp ls /
+rf1-demo-17nov/
+demo-web.txt  43B  HEALTHY
+ec2-teste.txt  27B  HEALTHY
+rf4-corrupcao.txt  48B  HEALTHY
+teste-binario.bin  1048576B  HEALTHY
+teste-windows.txt  58B  HEALTHY
+$ dcomp ls /rf1-demo-17nov
+docs/
+
+$ printf 'Teste RF1: operacoes de arquivos e diretorios.\n' > /tmp/rf1-demo.txt
+$ sha256sum /tmp/rf1-demo.txt
+15cc5c6fc010734c3757cc449f147353785f54d0b691cbee0642610cfb6d0c1f  /tmp/rf1-demo.txt
+
+$ curl -fsS -X PUT --data-binary @/tmp/rf1-demo.txt 'http://127.0.0.1:8000/files/content?path=%2Frf1-demo-17nov%2Fdocs%2Farquivo.txt'
+{"path":"/rf1-demo-17nov/docs/arquivo.txt","version":1,"sha256":"15cc5c6fc010734c3757cc449f147353785f54d0b691cbee0642610cfb6d0c1f","size_bytes":47,"replication_factor":3,"status":"HEALTHY","replicas":[{"node_id":"storage-1","machine_id":"storage-1","disk_id":"storage-1-disk0","address":"http://storage-1:9000/"},{"node_id":"storage-2","machine_id":"storage-2","disk_id":"storage-2-disk0","address":"http://storage-2:9000/"},{"node_id":"storage-3","machine_id":"storage-3","disk_id":"storage-3-disk0","address":"http://storage-3:9000/"}]}
+$ dcomp ls /rf1-demo-17nov/docs
+arquivo.txt  47B  HEALTHY
+
+$ dcomp mv /rf1-demo-17nov/docs/arquivo.txt /rf1-demo-17nov/renomeado.txt
+OK  /rf1-demo-17nov/docs/arquivo.txt -> /rf1-demo-17nov/renomeado.txt
+$ dcomp ls /rf1-demo-17nov
+docs/
+renomeado.txt  47B  HEALTHY
+$ dcomp stat /rf1-demo-17nov/renomeado.txt
+caminho   /rf1-demo-17nov/renomeado.txt
+versão    1
+tamanho   47 bytes
+sha256    15cc5c6fc010734c3757cc449f147353785f54d0b691cbee0642610cfb6d0c1f
+estado    HEALTHY
+réplica   storage-1  HEALTHY
+réplica   storage-2  HEALTHY
+réplica   storage-3  HEALTHY
+
+$ curl -fsS 'http://127.0.0.1:8000/files/content?path=%2Frf1-demo-17nov%2Frenomeado.txt' -o /tmp/rf1-recuperado.txt
+$ sha256sum /tmp/rf1-demo.txt /tmp/rf1-recuperado.txt
+15cc5c6fc010734c3757cc449f147353785f54d0b691cbee0642610cfb6d0c1f  /tmp/rf1-demo.txt
+15cc5c6fc010734c3757cc449f147353785f54d0b691cbee0642610cfb6d0c1f  /tmp/rf1-recuperado.txt
+
+$ dcomp rm /rf1-demo-17nov/renomeado.txt
+OK  removido: /rf1-demo-17nov/renomeado.txt
+$ dcomp rmdir /rf1-demo-17nov/docs
+OK  diretório removido: /rf1-demo-17nov/docs
+$ dcomp rmdir /rf1-demo-17nov
+OK  diretório removido: /rf1-demo-17nov
+$ dcomp ls /
+demo-web.txt  43B  HEALTHY
+ec2-teste.txt  27B  HEALTHY
+rf4-corrupcao.txt  48B  HEALTHY
+teste-binario.bin  1048576B  HEALTHY
+teste-windows.txt  58B  HEALTHY
