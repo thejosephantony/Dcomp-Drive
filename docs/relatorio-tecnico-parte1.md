@@ -3,7 +3,7 @@
 **Universidade Federal de Sergipe • Sistemas Distribuídos • Prof. Rafael Oliveira Vasconcelos**  
 **Equipe:** Joseph Antony, Thayla Figueiredo e Jeferson Gonzaga  
 **Data:** 17/11/2026 | **Entrega da Parte 1:** 18/11/2026  
-**Versão:** documento para revisão e confirmação das novas funcionalidades na AWS. O PDF de seis páginas é disponibilizado separadamente como artefato de entrega.
+**Versão:** relatório atualizado com evidências práticas de 17/11/2026; revisar paginação e exportar PDF final de 4–8 páginas antes da entrega.
 
 ## 1. Escopo e arquitetura
 
@@ -63,13 +63,22 @@ O controlador recebe heartbeats periódicos e classifica nós HEALTHY, SUSPECT o
 
 PostgreSQL armazena árvore de diretórios, mapa de arquivos, versões, réplicas, nós e discos. Volumes nomeados preservam banco e objetos após a recriação dos contêineres. `/status` mostra nós/discos, arquivos por estado e reparos ativos; `/metrics` agrega contagens de réplicas, requisições, latência média e bytes do gateway. Logs estruturados em JSON têm timestamp UTC, componente, evento, nível e identificadores.
 
-## 7. Evidências práticas obtidas na AWS
+## 7. Evidências práticas obtidas na AWS (17/11/2026)
 
-A versão anterior às novas mudanças de conformidade passou em **52 testes, 1 aviso**, em 5,78 s. Um ensaio RF1 real executou `mkdir → ls → put → stat → mv → get → rm → rmdir` com arquivo de 47 bytes, N=3 e hashes idênticos antes e depois da movimentação. Outros cinco arquivos permaneceram íntegros após a remoção dos recursos de teste.
+**Ambiente:** instância EC2 Ubuntu, Docker Compose com cinco storages e PostgreSQL; branch `feature/parte1-rf9-direct-client`, commit `14a6976` nos ensaios. **Suíte integrada: 64 testes aprovados, um aviso de depreciação, em 7,36 segundos.** A versão anterior havia aprovado 52 testes e comprovado RF1/RF4.
 
-No teste de corrupção RF4, o arquivo `/rf4-corrupcao.txt` tinha inicialmente três réplicas em storage-1, storage-2 e storage-4. A corrupção de uma cópia no storage-1 foi detectada por scrubbing e confirmada pelo controlador. O reparador recompôs a cópia no storage-5 e descartou a corrompida, restabelecendo HEALTHY/3 de 3. O arquivo recuperado apresentou SHA-256 igual ao original, `c538961c3614bf69bafac27ac120868bbbde2d3014b01aa8fbc8c26cd9926f2e`. Evidências estão em `docs/evidencias/parte1/`.
+- **RF1/RF3 e separação de planos:** upload de 46 bytes via CLI Docker com N=3, três nós distintos, download direto e `cmp` confirmando identidade byte a byte. SHA-256: `2984f43aa700834411dbf9d0ef6d2e0efdce513ec035f8f9111726a98bfb9af9`.
+- **RF5 — falha:** após `docker compose stop storage-2`, logs registraram `HEALTHY → SUSPECT → DEAD`, seguidos de eventos `repair_completed`; os seis arquivos continuaram saudáveis após reparação, sem indisponibilidade. Download conservou o SHA-256.
+- **RF6 — retorno:** `docker compose start storage-2` resultou em `node_reconciled` com `restored=0, discarded=5, skipped=0`: cinco cópias antigas descartadas porque o cluster já havia restabelecido N em nós elegíveis.
+- **RF7 — drain:** storage-1 entrou em `DRAINING`; arquivos passaram temporariamente por `UNDER_REPLICATED`/`RECOVERING`, e a substituição ocorreu em storage-4. Ao término, seis arquivos `HEALTHY`, nenhum indisponível e storage-1 sem dados; `undrain` devolveu o nó a `HEALTHY`.
+- **RF8 — concorrência:** script `scripts/test_concurrency_live.py` retornou `PASS`; duas escritas concorrentes no mesmo caminho resultaram em HTTP 409 e HTTP 201; **12/12 leituras** deram HTTP 200 com hashes válidos e a versão final permaneceu íntegra. Ao final, oito arquivos `HEALTHY`.
+- **RF9 — AES-256-GCM:** dois testes específicos aprovados. Com `ENCRYPTION_ENABLED=true`, o arquivo de 42 bytes foi persistido em três nós. Inspeção de disco mostrou metadado `AES-256-GCM`, prefixo `DCD1` e ausência do texto claro. Download e `cmp` iguais; um arquivo antigo não cifrado continuou legível. A chave privada está em `.env` fora do Git.
+- **RF10:** persistência de cinco arquivos após reiniciar a instância EC2, sem perda de metadados ou das três réplicas. `pg_dump` e cinco tarballs de storage foram conferidos.
+- **RF11/RF12:** `/status` mostrou nós, discos, capacidades, estados e reparos; `/metrics` mostrou latência, uptime e contagens. Logs JSON apresentaram `timestamp`, `component`, `event`, `level` e identificadores, incluindo reconciliação e recuperação.
 
-**Transparência:** módulos mais recentes (RF5, RF6, RF7, RF9, RF11, RF12 e CLI direta) foram preparados em PRs adicionais, mas **aguardam execução de testes completos e validação integrada na EC2**. Não atribuir o selo "validado" antes dos resultados.
+O teste de corrupção anterior do **RF4** detectou uma cópia danificada por scrubbing, recompôs o fator N=3 e preservou o SHA-256 `c538961c3614bf69bafac27ac120868bbbde2d3014b01aa8fbc8c26cd9926f2e`. É necessário incluir a sequência de corrupção/reparação no vídeo ou demonstração presencial.
+
+**Registro detalhado:** `docs/evidencias/parte1/aws-validacao-integrada-2026-11-17.md`. Não confundir testes funcionais com medição de disponibilidade em falhas físicas ou com auditoria de segurança.
 
 ## 8. Limitações conhecidas
 
@@ -81,7 +90,9 @@ No teste de corrupção RF4, o arquivo `/rf4-corrupcao.txt` tinha inicialmente t
 - Limite de banda de recuperação é por tarefa, não garantia de limite agregado.
 - Sem autenticação de usuários, autorização por arquivo, TLS interno, KMS ou rotação criptográfica.
 - A operação `mv` não move diretórios inteiros; somente arquivos.
-- Teste de concorrência real, entrada de novos nós, alteração de N e ensaio físico de AES-GCM ainda precisam de resultados documentados.
+- A execução ao vivo comprovou concorrência e AES-GCM, mas **N diferente de 3, rejeição por falta de espaço e entrada de nó adicional** ainda não tinham evidência prática nos primeiros ensaios. Existe script específico de validação RF3/RF7 em `scripts/test_rf3_allocation_live.py` para execução posterior.
+- O relatório documenta N de contêineres distintos no mesmo host, não sobrevivência a falha de máquina física.
+- Os contadores de tráfego do controlador não incluem o caminho direto CLI–Storage.
 
 ## 9. Divisão de tarefas e comunicação
 
@@ -93,21 +104,21 @@ Todos devem manter contribuições atribuídas corretamente no Git e revisar o r
 
 ## 10. Matriz RF1–RF12 e entregáveis
 
-| Código | Estado do trabalho | Evidência pendente |
-| --- | --- | --- |
-| RF1 | Operações funcionais + data/RECOVERING adicionados | Regressão de metadados novos |
-| RF2 | CLI, REST e web opcional | Validado anteriormente |
-| RF3 | N configurável, nós/discos distintos | N=3 validado |
-| RF4 | SHA-256 e scrubbing | Corrupção/reparo demonstrados |
-| RF5 | Falha, reparo prioritário e limites | Testar prioridade e limites novos |
-| RF6 | Descoberta e reconciliação | Retorno com cópia íntegra/obsoleta |
-| RF7 | Capacidade e drain | Teste real de drenagem planejada |
-| RF8 | Versionamento e transações | Concorrrência real com script reproduzível |
-| RF9 | AES-256-GCM opcional | Validar serviço ativo e ciphertext no disco |
-| RF10 | Metadados persistentes | Reinicialização demonstrada |
-| RF11 | Diagnóstico detalhado | Consultar /status e /metrics na AWS |
-| RF12 | Logs JSON | Capturar eventos com timestamp e objeto |
+| Código | Evidência comprovada / ressalvas |
+| --- | --- |
+| RF1 | Operações de namespace, estatísticas, SHA-256, data, cópias e estados; upload/download comprovados na AWS |
+| RF2 | CLI direta, endpoints REST e interface web opcional |
+| RF3 | N=3 comprovado, nós/discos lógicos distintos; teste de N=2 preparado, ainda pendente de execução |
+| RF4 | SHA-256, scrubbing e corrupção/reparação comprovados em ensaio anterior |
+| RF5 | Falha real, substituição e retomada N=3; prioridade e limites têm testes automatizados |
+| RF6 | Registro, retorno e reconciliação comprovados, com cinco cópias obsoletas descartadas |
+| RF7 | Drain completo comprovado; rejeição por capacidade tem script de teste pendente |
+| RF8 | Concorrência real: duas escritas (409/201) e 12 leituras íntegras, PASS |
+| RF9 | AES-256-GCM em disco, download idêntico, leitura retrocompatível, testes aprovados |
+| RF10 | Persistência após reinicialização da EC2 e backups conferidos |
+| RF11 | /status e /metrics demonstrados; métricas de tráfego direto não agregadas |
+| RF12 | Logs JSON de heartbeat, reparo, scrubbing e reconciliação demonstrados |
 
-Entregáveis: repositório com contribuições da equipe, README com os comandos, **relatório de 4 a 8 páginas**, Docker Compose com 1 controlador e 5 Storage Nodes, e **demonstração em vídeo ≤ 5 minutos ou apresentação presencial** mostrando upload/replicação, leitura, falha/recuperação e corrupção detectada.
+Entregáveis: repositório com contribuições da equipe, README, **relatório PDF com 4 a 8 páginas**, Compose com 1 controlador e ao menos 5 Storage Nodes e **vídeo até 5 minutos ou apresentação presencial** com upload N, leitura, queda/reparo e corrupção detectada.
 
-**Fonte:** Enunciado oficial da disciplina, *Atividade Prática: Sistema Distribuído de Armazenamento de Arquivos* (UFS, 2026), páginas 1–5. A Parte 2, com medições e análise experimental, vence em 30/11/2026.
+**Fonte:** enunciado oficial da disciplina, *Atividade Prática: Sistema Distribuído de Armazenamento de Arquivos* (UFS, 2026), páginas 1–5. A Parte 2, com medições e análise experimental, vence em 30/11/2026.
