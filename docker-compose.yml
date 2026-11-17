@@ -43,6 +43,7 @@ services:
       STORAGE_ADDRESS: http://storage-1:9000
       CONTROLLER_URL: http://controller:8000
       HEARTBEAT_INTERVAL_SECONDS: "2"
+      SCRUB_INTERVAL_SECONDS: "${SCRUB_INTERVAL_SECONDS:-15}"
       DATA_DIR: /data
     volumes: [storage1_data:/data]
     depends_on:

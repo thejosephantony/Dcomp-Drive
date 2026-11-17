@@ -342,3 +342,91 @@ def test_auto_repair_reclaims_expired_claim_after_restart(cluster, monkeypatch):
     with factory() as session:
         assert session.get(Replica, first.replica_id) is None
         assert session.get(Replica, second.replica_id).state == "REPAIRING"
+
+
+def test_corruption_report_drives_automatic_repair(cluster, monkeypatch):
+    """Um scrub confirmado remove a cópia da contagem e aciona o reparo N=3."""
+    import asyncio
+    import controller.main as controller_api
+    import controller.repair as repair
+    from controller.file_models import Replica
+
+    client, fake, factory = cluster
+    data = b"teste de corrupcao controlada" * 2
+    upload = client.put("/files/content", params={"path": "/corrompido.bin"}, content=data)
+    assert upload.status_code == 201, upload.text
+
+    first_node = upload.json()["replicas"][0]["node_id"]
+    with factory() as session:
+        write_id = session.query(FileVersion.version_id).one()[0]
+    fake.objects[(first_node, write_id)] = b"CONTEUDO CORROMPIDO"
+
+    def reported_metadata(url, *, timeout):
+        assert url.endswith("/objects/" + write_id + "/meta")
+        assert urlsplit(url).hostname == first_node
+        return httpx.Response(200, json={
+            "object_id": write_id,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size_bytes": len(data),
+            "status": "CORRUPTED",
+        })
+
+    monkeypatch.setattr(controller_api.httpx, "get", reported_metadata)
+    notice = client.post(f"/nodes/{first_node}/objects/{write_id}/corruption")
+    assert notice.status_code == 200, notice.text
+    assert notice.json()["status"] == "CORRUPTED"
+
+    with factory() as session:
+        marked = session.query(Replica).filter_by(version_id=write_id, node_id=first_node).one()
+        assert marked.state == "CORRUPTED"
+    degraded = client.get("/files/metadata", params={"path": "/corrompido.bin"})
+    assert degraded.json()["status"] == "UNDER_REPLICATED"
+    assert len(degraded.json()["replicas"]) == 2
+
+    # Repetir o relato não deve criar conflito nem gerar cópias duplicadas.
+    again = client.post(f"/nodes/{first_node}/objects/{write_id}/corruption")
+    assert again.status_code == 200
+    assert again.json()["status"] == "ALREADY_CORRUPTED"
+
+    monkeypatch.setattr(repair, "SessionLocal", factory)
+    assert asyncio.run(repair.repair_once()) is True
+    healthy = client.get("/files/metadata", params={"path": "/corrompido.bin"})
+    assert healthy.status_code == 200
+    assert healthy.json()["status"] == "HEALTHY"
+    assert len(healthy.json()["replicas"]) == 3
+    assert first_node not in {r["node_id"] for r in healthy.json()["replicas"]}
+    # A copia defeituosa so e apagada apos 3 copias integras confirmadas.
+    assert (first_node, write_id) not in fake.objects
+    with factory() as session:
+        assert session.query(Replica).filter_by(version_id=write_id, state="CORRUPTED").count() == 0
+    download = client.get("/files/content", params={"path": "/corrompido.bin"})
+    assert download.status_code == 200
+    assert download.content == data
+
+
+def test_corruption_report_rejects_healthy_replica(cluster, monkeypatch):
+    """Um cliente não pode induzir reparo quando o nó diz que a cópia é íntegra."""
+    import controller.main as controller_api
+    from controller.file_models import Replica
+
+    client, _fake, factory = cluster
+    upload = client.put("/files/content", params={"path": "/integro.bin"}, content=b"OK")
+    assert upload.status_code == 201
+    first_node = upload.json()["replicas"][0]["node_id"]
+    with factory() as session:
+        write_id = session.query(FileVersion.version_id).one()[0]
+
+    def healthy_metadata(url, *, timeout):
+        return httpx.Response(200, json={
+            "object_id": write_id,
+            "sha256": hashlib.sha256(b"OK").hexdigest(),
+            "size_bytes": 2,
+            "status": "HEALTHY",
+        })
+
+    monkeypatch.setattr(controller_api.httpx, "get", healthy_metadata)
+    response = client.post(f"/nodes/{first_node}/objects/{write_id}/corruption")
+    assert response.status_code == 409
+    with factory() as session:
+        replica = session.query(Replica).filter_by(version_id=write_id, node_id=first_node).one()
+        assert replica.state == "ACKED"

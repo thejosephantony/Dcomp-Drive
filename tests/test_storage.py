@@ -204,3 +204,43 @@ def test_http_rejects_bad_digest_and_corrupted_read(api):
     scrubbed = client.post("/scrub")
     assert scrubbed.status_code == 200
     assert "http-corrupted" in scrubbed.json()["corrupted_ids"]
+
+
+def test_scrub_notifies_controller_about_corruption(api, monkeypatch):
+    """O endpoint /scrub informa ao controlador o ID físico corrompido."""
+    import httpx
+    from storage import main as storage_api
+
+    client, active_store = api
+    data = b"conteudo de teste para notificacao de integridade"
+    response = client.put(
+        "/objects/test-corrupted-report",
+        content=data,
+        headers={"X-Expected-Sha256": digest(data)},
+    )
+    assert response.status_code == 201
+    active_store.corrupt_for_testing("test-corrupted-report")
+
+    destinations = []
+
+    class FakeControllerClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        async def post(self, url, **kwargs):
+            destinations.append(url)
+            return httpx.Response(200, json={"status": "CORRUPTED"})
+
+    monkeypatch.setattr(
+        storage_api.httpx, "AsyncClient",
+        lambda **kwargs: FakeControllerClient(),
+    )
+    report = client.post("/scrub")
+    assert report.status_code == 200
+    assert report.json()["corrupted_ids"] == ["test-corrupted-report"]
+    assert destinations == [
+        f"{storage_api.CONTROLLER_URL}/nodes/{storage_api.NODE_ID}/objects/test-corrupted-report/corruption"
+    ]

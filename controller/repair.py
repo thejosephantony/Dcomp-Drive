@@ -326,6 +326,85 @@ def _finish_one(session: Session, job: RepairJob, success: bool) -> bool:
     return True
 
 
+def _corrupted_cleanup_targets(job: RepairJob) -> list[tuple[str, str]]:
+    """Descobre réplicas corrompidas após a restauração de N cópias válidas."""
+    with SessionLocal() as session:
+        version = session.get(FileVersion, job.version_id)
+        if version is None or version.status != "COMMITTED":
+            return []
+        entry = session.get(FileEntry, version.file_id)
+        if entry is None or entry.current_version_id != job.version_id:
+            return []
+        replicas = session.scalars(
+            select(Replica).where(Replica.version_id == job.version_id)
+        ).all()
+        nodes = {node.node_id: node for node in session.scalars(select(Node)).all()}
+        now = utcnow()
+        count = sum(
+            1 for replica in replicas
+            if replica.state == "ACKED"
+            and replica.node_id in nodes
+            and _alive(nodes[replica.node_id], now)
+        )
+        if count < version.replication_factor:
+            return []
+        targets = []
+        for replica in replicas:
+            if replica.state != "CORRUPTED":
+                continue
+            node = nodes.get(replica.node_id)
+            if node is None or not _alive(node, now):
+                continue
+            try:
+                targets.append((replica.replica_id, _storage_url(node.address)))
+            except Exception:
+                logger.warning("corrupt_cleanup_address_rejected node=%s", replica.node_id)
+        return targets
+
+
+def _forget_discarded_replica(job: RepairJob, replica_id: str) -> None:
+    """Remove o vínculo corrompido após exclusão física confirmada."""
+    with SessionLocal() as session:
+        replica = session.scalar(
+            select(Replica).where(
+                Replica.replica_id == replica_id,
+                Replica.version_id == job.version_id,
+                Replica.state == "CORRUPTED",
+            ).with_for_update()
+        )
+        if replica is None:
+            return
+        session.delete(replica)
+        session.commit()
+
+
+async def _cleanup_corrupted_after_repair(job: RepairJob) -> None:
+    """Descarta bytes defeituosos só depois de uma nova réplica íntegra existir."""
+    targets = await asyncio.to_thread(_corrupted_cleanup_targets, job)
+    if not targets:
+        return
+    async with httpx.AsyncClient(timeout=_timeout()) as client:
+        for replica_id, address in targets:
+            try:
+                response = await client.delete(f"{address}/objects/{job.version_id}")
+                if response.status_code in (200, 404):
+                    await asyncio.to_thread(_forget_discarded_replica, job, replica_id)
+                    logger.info(
+                        "corrupted_replica_discarded version=%s address=%s",
+                        job.version_id, address,
+                    )
+                else:
+                    logger.warning(
+                        "corrupted_replica_cleanup_failed version=%s http=%d",
+                        job.version_id, response.status_code,
+                    )
+            except (httpx.RequestError, ValueError):
+                logger.exception(
+                    "corrupted_replica_cleanup_error version=%s address=%s",
+                    job.version_id, address,
+                )
+
+
 async def repair_once() -> bool:
     """Tenta um reparo físico; True somente após verificar a nova réplica."""
     job = await asyncio.to_thread(_claim_with_session)
@@ -335,7 +414,13 @@ async def repair_once() -> bool:
     verified = False
     try:
         verified = await _copy_verified(job)
-        return await asyncio.to_thread(_finish_with_session, job, verified)
+        repaired = await asyncio.to_thread(_finish_with_session, job, verified)
+        if repaired:
+            try:
+                await _cleanup_corrupted_after_repair(job)
+            except Exception:
+                logger.exception("corrupted_replica_cleanup_unexpected version=%s", job.version_id)
+        return repaired
     except asyncio.CancelledError:
         await asyncio.to_thread(_finish_with_session, job, False)
         raise

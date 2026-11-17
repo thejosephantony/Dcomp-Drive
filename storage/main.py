@@ -125,6 +125,37 @@ async def report_forever() -> None:
             await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
 
 
+async def notify_corrupted_replicas(report: ScrubReport) -> None:
+    """Notifica o controlador sem bloquear o scrubbing em caso de falha de rede.
+
+    A verificação física segue válida mesmo quando o controlador está fora;
+    ocorrências persistentes são reenviadas no próximo ciclo periódico.
+    """
+    if not report.corrupted_ids:
+        return
+    async with httpx.AsyncClient(timeout=5) as client:
+        for object_id in set(report.corrupted_ids):
+            try:
+                response = await client.post(
+                    f"{CONTROLLER_URL}/nodes/{NODE_ID}/objects/{object_id}/corruption"
+                )
+                if response.status_code == 200:
+                    logger.warning(
+                        "scrub_corruption_reported node=%s object_id=%s",
+                        NODE_ID, object_id,
+                    )
+                else:
+                    logger.warning(
+                        "scrub_corruption_report_rejected node=%s object_id=%s code=%s",
+                        NODE_ID, object_id, response.status_code,
+                    )
+            except (httpx.HTTPError, OSError) as exc:
+                logger.warning(
+                    "scrub_corruption_report_failed node=%s object_id=%s error=%s",
+                    NODE_ID, object_id, exc,
+                )
+
+
 async def scrub_forever() -> None:
     """Execução periódica em segundo plano de scrubbing, quando configurada."""
     if SCRUB_INTERVAL_SECONDS <= 0:
@@ -135,7 +166,8 @@ async def scrub_forever() -> None:
         try:
             await asyncio.sleep(SCRUB_INTERVAL_SECONDS)
             logger.info("scrub_periodic_trigger node=%s", NODE_ID)
-            await store.scrub()
+            report = await store.scrub()
+            await notify_corrupted_replicas(report)
         except asyncio.CancelledError:
             logger.info("scrub_background_cancelled node=%s", NODE_ID)
             break
@@ -520,12 +552,16 @@ async def replicate_object(object_id: str, payload: ReplicateRequest) -> Replica
 
 @app.post("/scrub", response_model=ScrubReport)
 async def scrub_all() -> ScrubReport:
-    return await store.scrub()
+    report = await store.scrub()
+    await notify_corrupted_replicas(report)
+    return report
 
 
 @app.post("/objects/{object_id}/scrub", response_model=ScrubReport)
 async def scrub_single(object_id: str) -> ScrubReport:
-    return await store.scrub(specific_object_id=object_id)
+    report = await store.scrub(specific_object_id=object_id)
+    await notify_corrupted_replicas(report)
+    return report
 
 
 @app.get("/scrub/status", response_model=ScrubReport | dict)

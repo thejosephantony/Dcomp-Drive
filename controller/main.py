@@ -2,6 +2,9 @@
 
 import asyncio
 import logging
+import re
+
+import httpx
 from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -13,6 +16,8 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from controller.database import get_session
+from controller.file_models import FileEntry, FileVersion, Replica
+from controller.file_transfer import _storage_url
 from controller.file_api import router as files_router
 from controller.file_transfer import router as transfer_router
 from controller.models import Disk, Node
@@ -21,6 +26,7 @@ from controller.repair import repair_forever
 from controller.schemas import ClusterStatus, Heartbeat, NodeRegistration, NodeStatus
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -135,3 +141,64 @@ app.mount("/ui", StaticFiles(directory=str(WEB_ROOT)), name="dashboard-assets")
 def dashboard() -> FileResponse:
     """Painel do DComp Drive (uso de laboratório, sem autenticação)."""
     return FileResponse(WEB_ROOT / "index.html")
+
+
+@app.post("/nodes/{node_id}/objects/{object_id}/corruption")
+def report_corrupted_replica(
+    node_id: str,
+    object_id: str,
+    session: Session = Depends(get_session),
+) -> dict[str, str]:
+    """Registra corrupção física confirmada, liberando o reparador para recompor N.
+
+    O registro do nó precisa existir e o metadado físico precisa estar marcado
+    CORRUPTED. Não aceita denúncias arbitrárias de clientes como prova.
+    O endpoint só deve ser acessível na rede de laboratório sem exposição pública.
+    """
+    if re.fullmatch(r"[0-9a-f]{32}", object_id) is None:
+        raise HTTPException(422, detail="ID de objeto inválido")
+    node = session.get(Node, node_id)
+    if node is None:
+        raise HTTPException(404, detail="Storage Node não registrado")
+
+    replica = session.scalar(
+        select(Replica)
+        .where(Replica.version_id == object_id, Replica.node_id == node_id)
+        .with_for_update()
+    )
+    if replica is None:
+        raise HTTPException(404, detail="Réplica desconhecida pelo controlador")
+    if replica.state == "CORRUPTED":
+        return {"status": "ALREADY_CORRUPTED", "object_id": object_id, "node_id": node_id}
+    if replica.state != "ACKED":
+        raise HTTPException(409, detail="Réplica não está confirmada")
+
+    version = session.get(FileVersion, object_id)
+    entry = session.get(FileEntry, version.file_id) if version is not None else None
+    if (
+        version is None or version.status != "COMMITTED"
+        or entry is None or entry.current_version_id != object_id
+    ):
+        raise HTTPException(409, detail="Versão não é a versão publicada")
+
+    try:
+        address = _storage_url(node.address)
+        response = httpx.get(f"{address}/objects/{object_id}/meta", timeout=5.0)
+        response.raise_for_status()
+        physical = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("corruption_validation_unavailable node=%s object=%s error=%s", node_id, object_id, exc)
+        raise HTTPException(503, detail="Não foi possível confirmar a corrupção no Storage Node") from exc
+
+    if (
+        physical.get("object_id") != object_id
+        or physical.get("sha256") != version.sha256
+        or physical.get("size_bytes") != version.size_bytes
+        or physical.get("status") != "CORRUPTED"
+    ):
+        raise HTTPException(409, detail="Storage Node não confirmou a corrupção física")
+
+    replica.state = "CORRUPTED"
+    session.commit()
+    logging.getLogger(__name__).warning("replica_corruption_confirmed node=%s object=%s", node_id, object_id)
+    return {"status": "CORRUPTED", "object_id": object_id, "node_id": node_id}
