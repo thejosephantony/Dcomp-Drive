@@ -1,0 +1,28 @@
+{
+  "path": "/rf4-corrupcao.txt",
+  "version": 1,
+  "sha256": "c538961c3614bf69bafac27ac120868bbbde2d3014b01aa8fbc8c26cd9926f2e",
+  "size_bytes": 48,
+  "replication_factor": 3,
+  "status": "HEALTHY",
+  "replicas": [
+    {
+      "node_id": "storage-2",
+      "machine_id": "storage-2",
+      "disk_id": "storage-2-disk0",
+      "address": "http://storage-2:9000/"
+    },
+    {
+      "node_id": "storage-4",
+      "machine_id": "storage-4",
+      "disk_id": "storage-4-disk0",
+      "address": "http://storage-4:9000/"
+    },
+    {
+      "node_id": "storage-5",
+      "machine_id": "storage-5",
+      "disk_id": "storage-5-disk0",
+      "address": "http://storage-5:9000/"
+    }
+  ]
+}
