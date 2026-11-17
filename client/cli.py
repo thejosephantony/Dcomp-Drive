@@ -1,7 +1,7 @@
 """CLI do DComp Drive (python -m client.cli <comando>).
 
 O backend é selecionado por DCOMP_BACKEND=mock (padrão) ou http.
-No modo HTTP, put/get/stat/status utilizam o controlador real.
+No modo HTTP, put/get/stat/status/ls/mkdir/rmdir/mv/rm utilizam o controlador real.
 """
 
 import os

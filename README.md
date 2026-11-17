@@ -316,3 +316,9 @@ O plano de controle de arquivos é implementado em uma etapa separada, com
 `/files/prepare`, confirmação de réplicas e publicação de versões. **Os ACKs de
 réplicas são simuláveis; ainda não provam que os bytes foram gravados nos nós**.
 Consulte [docs/file-control.md](docs/file-control.md) antes de executar.
+
+### RF1 — Namespace persistente no controlador (PR incremental)
+
+O backend `DCOMP_BACKEND=http` agora também oferece `ls`, `mkdir`, `rmdir`, `mv` e `rm`, usando metadados persistentes no PostgreSQL. `mv` renomeia arquivos sem copiar os bytes físicos; `rmdir` exige diretório vazio. `rm` remove a referência lógica e tenta apagar as cópias físicas, registrando qualquer limpeza pendente.
+
+A sequência de comandos, os contratos REST e as limitações estão em [docs/rf1-namespace.md](docs/rf1-namespace.md). O modo `mock` permanece como apoio para testes isolados. O comando `drain` não foi implementado no backend HTTP nesta etapa.

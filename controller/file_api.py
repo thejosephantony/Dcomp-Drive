@@ -141,6 +141,8 @@ def prepare(payload: PrepareRequest, session: Session = Depends(get_session)) ->
     parent = payload.path.rsplit("/", 1)[0] or "/"
     if session.get(Directory, parent) is None:
         raise HTTPException(404, detail="diretório pai não existe")
+    if session.get(Directory, payload.path) is not None:
+        raise HTTPException(409, detail="o caminho já é um diretório")
 
     n = required_replicas(payload)
     targets = choose_targets(session, payload.size_bytes, n, now)

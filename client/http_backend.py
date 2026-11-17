@@ -1,7 +1,7 @@
 """Backend HTTP da CLI: transfere arquivos pelo gateway do controlador.
 
 O computador do usuário não precisa alcançar os endereços privados dos
-Storage Nodes. Operações de diretório e drain continuam indisponíveis.
+Storage Nodes. Operações de namespace usam metadados PostgreSQL; drain ainda indisponível.
 """
 import hashlib
 import os
@@ -142,19 +142,26 @@ class HttpBackend:
         raise CLIError("501", f"{operation} ainda não implementado no backend HTTP")
 
     def ls(self, remote_path: str) -> list[DirEntry]:
-        self._unsupported("ls")
+        response = self._request("GET", "/files/entries", params={"path": remote_path})
+        return [DirEntry(**item) for item in response.json()]
 
     def mkdir(self, remote_path: str) -> None:
-        self._unsupported("mkdir")
+        self._request("POST", "/files/directories", json={"path": remote_path})
 
     def rmdir(self, remote_path: str) -> None:
-        self._unsupported("rmdir")
+        self._request("DELETE", "/files/directories", params={"path": remote_path})
 
     def mv(self, src: str, dst: str) -> None:
-        self._unsupported("mv")
+        self._request("POST", "/files/move", json={"src": src, "dst": dst})
 
     def rm(self, remote_path: str) -> None:
-        self._unsupported("rm")
+        response = self._request("DELETE", "/files/entry", params={"path": remote_path})
+        pending = response.json().get("pending_cleanup", 0)
+        if pending:
+            raise CLIError(
+                "CLEANUP",
+                f"Arquivo removido do catálogo, mas {pending} réplica(s) ainda aguardam limpeza física",
+            )
 
     def drain(self, node_id: str) -> None:
         self._unsupported("drain")

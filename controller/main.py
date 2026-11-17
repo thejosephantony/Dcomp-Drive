@@ -19,6 +19,7 @@ from controller.database import get_session
 from controller.file_models import FileEntry, FileVersion, Replica
 from controller.file_transfer import _storage_url
 from controller.file_api import router as files_router
+from controller.namespace_api import router as namespace_router
 from controller.file_transfer import router as transfer_router
 from controller.models import Disk, Node
 from controller.monitor import monitor_forever, recalculate_status
@@ -48,6 +49,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="DComp Drive Controller", version="0.2.0", lifespan=lifespan)
 app.include_router(files_router)
 app.include_router(transfer_router)
+app.include_router(namespace_router)
 
 
 def _write_disks(session: Session, node: Node, reports) -> None:

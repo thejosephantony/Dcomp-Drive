@@ -430,3 +430,95 @@ def test_corruption_report_rejects_healthy_replica(cluster, monkeypatch):
     with factory() as session:
         replica = session.query(Replica).filter_by(version_id=write_id, node_id=first_node).one()
         assert replica.state == "ACKED"
+
+
+
+def test_rf1_namespace_full_lifecycle(cluster):
+    """mkdir / ls / mv / rm / rmdir no PostgreSQL simulado e storage real fake."""
+    client, fake, factory = cluster
+    assert client.post("/files/directories", json={"path": "/trabalhos"}).status_code == 201
+    assert client.post("/files/directories", json={"path": "/trabalhos/docs"}).status_code == 201
+
+    root = client.get("/files/entries", params={"path": "/"})
+    assert root.status_code == 200
+    assert root.json() == [{"name": "trabalhos", "kind": "dir", "size": 0, "state": ""}]
+    assert client.get("/files/entries", params={"path": "/trabalhos/docs"}).json() == []
+
+    payload = b"rf1 - namespace"
+    upload = client.put(
+        "/files/content", params={"path": "/trabalhos/docs/relatorio.txt"}, content=payload,
+    )
+    assert upload.status_code == 201, upload.text
+    before = client.get("/files/entries", params={"path": "/trabalhos/docs"})
+    assert before.json() == [{
+        "name": "relatorio.txt", "kind": "file", "size": len(payload),
+        "state": "HEALTHY",
+    }]
+
+    with factory() as session:
+        write_id = session.query(FileVersion.version_id).one()[0]
+    copy_count = sum(1 for (_, obj_id) in fake.objects if obj_id == write_id)
+    assert copy_count == 3
+
+    moved = client.post("/files/move", json={
+        "src": "/trabalhos/docs/relatorio.txt",
+        "dst": "/trabalhos/renomeado.txt",
+    })
+    assert moved.status_code == 200, moved.text
+    assert client.get("/files/metadata", params={"path": "/trabalhos/docs/relatorio.txt"}).status_code == 404
+    assert client.get("/files/content", params={"path": "/trabalhos/renomeado.txt"}).content == payload
+    assert sum(1 for (_, obj_id) in fake.objects if obj_id == write_id) == 3
+
+    deleted = client.delete("/files/entry", params={"path": "/trabalhos/renomeado.txt"})
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["pending_cleanup"] == 0
+    assert client.get("/files/metadata", params={"path": "/trabalhos/renomeado.txt"}).status_code == 404
+    assert not any(obj_id == write_id for (_, obj_id) in fake.objects)
+
+    assert client.delete("/files/directories", params={"path": "/trabalhos/docs"}).status_code == 200
+    assert client.delete("/files/directories", params={"path": "/trabalhos"}).status_code == 200
+    assert client.get("/files/entries", params={"path": "/"}).json() == []
+
+
+def test_rf1_namespace_validates_paths_and_nonempty_dirs(cluster):
+    client, _fake, _factory = cluster
+    assert client.delete("/files/directories", params={"path": "/"}).status_code == 409
+    assert client.post("/files/directories", json={"path": "/inexistente/docs"}).status_code == 404
+    assert client.post("/files/directories", json={"path": "/a/../b"}).status_code == 422
+    assert client.get("/files/entries", params={"path": "/nada"}).status_code == 404
+
+    assert client.post("/files/directories", json={"path": "/dir"}).status_code == 201
+    assert client.post("/files/directories", json={"path": "/dir"}).status_code == 409
+    assert client.post("/files/directories", json={"path": "/dir/filha"}).status_code == 201
+    assert client.delete("/files/directories", params={"path": "/dir"}).status_code == 409
+    assert client.put("/files/content", params={"path": "/dir"}, content=b"X").status_code == 409
+
+    payload = client.put("/files/content", params={"path": "/dir/arquivo"}, content=b"X")
+    assert payload.status_code == 201
+    assert client.delete("/files/directories", params={"path": "/dir"}).status_code == 409
+    assert client.delete("/files/entry", params={"path": "/dir"}).status_code == 409
+    assert client.post("/files/move", json={"src": "/dir", "dst": "/novo"}).status_code == 409
+    assert client.post("/files/move", json={
+        "src": "/dir/arquivo", "dst": "/dir/filha",
+    }).status_code == 409
+    assert client.post("/files/move", json={
+        "src": "/dir/arquivo", "dst": "/inexistente/arquivo",
+    }).status_code == 404
+
+
+def test_rf1_remove_reclaims_all_published_versions(cluster):
+    """rm libera as copias da versão atual e das versões anteriores."""
+    client, fake, factory = cluster
+    first = client.put("/files/content", params={"path": "/versoes-rf1"}, content=b"primeira")
+    second = client.put("/files/content", params={"path": "/versoes-rf1"}, content=b"segunda")
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert len(fake.objects) == 6
+
+    result = client.delete("/files/entry", params={"path": "/versoes-rf1"})
+    assert result.status_code == 200, result.text
+    assert result.json()["pending_cleanup"] == 0
+    assert fake.objects == {}
+    with factory() as session:
+        assert session.query(FileVersion).count() == 0
+    assert client.get("/files/metadata", params={"path": "/versoes-rf1"}).status_code == 404
