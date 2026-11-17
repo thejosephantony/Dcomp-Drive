@@ -157,3 +157,12 @@ Evidências anteriores de RF1/RF4 na AWS encontram-se em \`docs/evidencias/parte
 Os commits devem preservar a autoria real de cada membro. Os PRs da equipe estão empilhados e devem ser integrados em ordem depois de revisão; não atribua autoria de componentes gerados sem revisão correspondente. As limitações devem aparecer honestamente na apresentação e no relatório técnico.
 
 **Referência:** enunciado oficial "Atividade Prática: Sistema Distribuído de Armazenamento de Arquivos" (UFS, Sistemas Distribuídos, Parte 1).
+
+## 9. Entregáveis da Parte 1
+
+- **Relatório técnico de seis páginas (PDF):** disponível como artefato produzido para a equipe revisar e entregar; fonte editável em [docs/relatorio-tecnico-parte1.md](docs/relatorio-tecnico-parte1.md).
+- **Roteiro de vídeo ou apresentação (até cinco minutos):** [docs/roteiro-demonstracao-parte1.md](docs/roteiro-demonstracao-parte1.md).
+- **Teste de concorrência ao vivo (RF8):** `sudo docker compose exec -T controller python scripts/test_concurrency_live.py` (cria apenas `/rf8-concorrencia-demo.bin` e imprime resultados JSON).
+- **Evidências de RF1/RF4:** [docs/evidencias/parte1](docs/evidencias/parte1).
+
+O relatório não deve declarar as funcionalidades novas como validadas antes da execução de CI, ensaios na EC2 e revisão da equipe.
