@@ -45,24 +45,27 @@ class FakeStorageClient:
         if digest != headers["X-Expected-Sha256"]:
             return httpx.Response(422, json={"detail": "sha incorreto"})
         self.objects[(node, object_id)] = data
-        with self.factory() as session:
-            result = acknowledge(
-                headers["X-Write-Id"],
-                ReplicaAck(
-                    node_id=node,
-                    disk_id=f"{node}-disk0",
-                    size_bytes=len(data),
-                    sha256=digest,
-                ),
-                session,
-            )
+        acked = False
+        if headers.get("X-Write-Id"):
+            with self.factory() as session:
+                result = acknowledge(
+                    headers["X-Write-Id"],
+                    ReplicaAck(
+                        node_id=node,
+                        disk_id=f"{node}-disk0",
+                        size_bytes=len(data),
+                        sha256=digest,
+                    ),
+                    session,
+                )
+                acked = result.status == "PENDING"
         return httpx.Response(
             201,
             json={
                 "object_id": object_id, "node_id": node,
                 "disk_id": f"{node}-disk0",
                 "sha256": digest, "size_bytes": len(data),
-                "controller_acked": result.status == "PENDING",
+                "controller_acked": acked,
             },
         )
 
@@ -202,3 +205,140 @@ def test_overwrite_creates_distinct_physical_versions(cluster):
         assert len(set(v.version_id for v in versions)) == 2
         assert all(len([k for k in fake.objects if k[1] == v.version_id]) == 3 for v in versions)
     assert client.get("/files/content", params={"path": "/versoes.bin"}).content == b"segunda"
+
+
+def test_auto_repair_restores_three_replicas(cluster, monkeypatch):
+    import asyncio
+    from controller import repair
+    from controller.file_models import Replica
+
+    client, fake, factory = cluster
+    data = b"tolerancia a falha N=3" * 50
+    uploaded = client.put("/files/content", params={"path": "/heal.bin"}, content=data)
+    assert uploaded.status_code == 201
+    failed = uploaded.json()["replicas"][0]["node_id"]
+    with factory() as session:
+        version = session.query(FileVersion).one()
+        version_id = version.version_id
+        node = session.get(Node, failed)
+        node.state = "DEAD"
+        session.commit()
+    monkeypatch.setattr(repair, "SessionLocal", factory)
+
+    before = client.get("/files/metadata", params={"path": "/heal.bin"}).json()
+    assert before["status"] == "UNDER_REPLICATED"
+    assert len(before["replicas"]) == 2
+    assert asyncio.run(repair.repair_once()) is True
+
+    after = client.get("/files/metadata", params={"path": "/heal.bin"}).json()
+    assert after["status"] == "HEALTHY"
+    assert len(after["replicas"]) == 3
+    assert failed not in {x["node_id"] for x in after["replicas"]}
+    assert len({x["machine_id"] for x in after["replicas"]}) == 3
+    with factory() as session:
+        reps = session.query(Replica).filter(Replica.version_id == version_id).all()
+        assert len([r for r in reps if r.state == "ACKED"]) == 3
+        assert len([r for r in reps if r.state == "LOST"]) == 1
+    assert len([key for key in fake.objects if key[1] == version_id and key[0] != failed]) == 3
+    assert client.get("/files/content", params={"path": "/heal.bin"}).content == data
+    assert asyncio.run(repair.repair_once()) is False
+
+
+def test_auto_repair_fails_closed_when_destination_unreachable(cluster, monkeypatch):
+    import asyncio
+    from controller import repair
+    from controller.file_models import Replica
+
+    client, fake, factory = cluster
+    response = client.put("/files/content", params={"path": "/fails.bin"}, content=b"arquivo")
+    assert response.status_code == 201
+    failed = response.json()["replicas"][0]["node_id"]
+    with factory() as session:
+        session.get(Node, failed).state = "DEAD"
+        session.commit()
+    fake.fail_put_node = "storage-4"
+    monkeypatch.setattr(repair, "SessionLocal", factory)
+
+    assert asyncio.run(repair.repair_once()) is False
+    meta = client.get("/files/metadata", params={"path": "/fails.bin"}).json()
+    assert meta["status"] == "UNDER_REPLICATED"
+    with factory() as session:
+        assert session.query(Replica).filter(Replica.state == "REPAIRING").count() == 0
+        assert session.query(Replica).filter(Replica.state == "ACKED").count() == 3
+
+    fake.fail_put_node = None
+    assert asyncio.run(repair.repair_once()) is True
+    assert client.get("/files/metadata", params={"path": "/fails.bin"}).json()["status"] == "HEALTHY"
+
+
+def test_auto_repair_falls_back_to_second_source(cluster, monkeypatch):
+    import asyncio
+    from controller import repair
+
+    client, fake, factory = cluster
+    data = b"origem valida" * 10
+    response = client.put("/files/content", params={"path": "/origens.bin"}, content=data)
+    assert response.status_code == 201
+    replicas = response.json()["replicas"]
+    dead = replicas[0]["node_id"]
+    corrupted = replicas[1]["node_id"]
+    with factory() as session:
+        session.get(Node, dead).state = "DEAD"
+        write_id = session.query(FileVersion.version_id).one()[0]
+        session.commit()
+    fake.objects[(corrupted, write_id)] = b"conteudo corrompido"
+    fake.read_attempts.clear()
+    monkeypatch.setattr(repair, "SessionLocal", factory)
+
+    assert asyncio.run(repair.repair_once()) is True
+    assert corrupted in fake.read_attempts
+    assert replicas[2]["node_id"] in fake.read_attempts
+    assert client.get("/files/metadata", params={"path": "/origens.bin"}).json()["status"] == "HEALTHY"
+
+
+def test_auto_repair_waits_when_no_spare_machine(cluster, monkeypatch):
+    import asyncio
+    from controller import repair
+
+    client, fake, factory = cluster
+    response = client.put("/files/content", params={"path": "/sem-vaga.bin"}, content=b"abc")
+    assert response.status_code == 201
+    with factory() as session:
+        for node_id in [response.json()["replicas"][0]["node_id"], "storage-4", "storage-5"]:
+            session.get(Node, node_id).state = "DEAD"
+        session.commit()
+    monkeypatch.setattr(repair, "SessionLocal", factory)
+
+    assert asyncio.run(repair.repair_once()) is False
+    meta = client.get("/files/metadata", params={"path": "/sem-vaga.bin"}).json()
+    assert meta["status"] == "UNDER_REPLICATED"
+    assert len(meta["replicas"]) == 2
+
+
+def test_auto_repair_reclaims_expired_claim_after_restart(cluster, monkeypatch):
+    from datetime import timedelta
+    from controller import repair
+    from controller.file_models import Replica
+
+    client, _fake, factory = cluster
+    response = client.put("/files/content", params={"path": "/lease.bin"}, content=b"conteudo")
+    assert response.status_code == 201
+    with factory() as session:
+        session.get(Node, response.json()["replicas"][0]["node_id"]).state = "DEAD"
+        session.commit()
+
+    with factory() as session:
+        first = repair._claim_one(session)
+    assert first is not None
+    with factory() as session:
+        assert repair._claim_one(session) is None
+        stale = session.get(Replica, first.replica_id)
+        stale.acked_at = repair.utcnow() - timedelta(seconds=300)
+        session.commit()
+    with factory() as session:
+        second = repair._claim_one(session)
+    assert second is not None
+    assert second.replica_id != first.replica_id
+    with factory() as session:
+        assert session.get(Replica, first.replica_id) is None
+        assert session.get(Replica, second.replica_id).state == "REPAIRING"

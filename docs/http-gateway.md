@@ -51,7 +51,8 @@ py .\scripts\smoke_gateway_local.py
 ~~~
 
 O script inicia e encerra automaticamente todos os serviços na interface
-127.0.0.1; os dados de teste ficam em uma pasta temporária.
+127.0.0.1, mata um Storage Node e exige que o controlador restabeleça
+três réplicas físicas íntegras em nós diferentes. Os dados são temporários.
 
 ## Teste integrado na AWS ou em servidor Linux
 
@@ -96,7 +97,15 @@ um túnel SSH ou VPN. Não exponha o controlador e os nós sem autenticação.
 - O gateway usa a API síncrona SQLAlchemy dentro de rotas assíncronas;
   adequar para carga de produção depois da demonstração.
 - Sobrescritas preservam versões antigas, mas ainda não têm garbage collection.
-- Não há re-replicação automática após perda física de um nó.
+- O controlador tenta **re-replicação automática N=3** após detectar um nó
+  DEAD, verificando origem e destino com SHA-256 antes de marcar a nova
+  réplica como ACKED. Os claims REPAIRING expiram após REPAIR_CLAIM_SECONDS.
+- O reparo é feito pelo gateway com buffer em memória; arquivos acima do
+  limite MAX_TRANSFER_BYTES não são reconstruídos automaticamente.
+- O nó que retorna após um reparo não é readotado automaticamente: sua
+  réplica anterior é LOST e os bytes antigos aguardam limpeza futura.
+- Sem versão de liderança distribuída do monitor (líder único) na
+  demonstração; locks SQL ajudam a impedir claims concorrentes no PostgreSQL.
 - O GitHub Actions continua falhando em pré-execução; validar
   separadamente a configuração de runners/Actions.
 - ls, mkdir, rm, mv, rmdir e drain ainda não têm implementação HTTP.

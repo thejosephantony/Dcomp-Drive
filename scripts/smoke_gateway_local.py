@@ -70,6 +70,8 @@ def main() -> int:
             "NODE_TIMEOUT_SECONDS": "8",
             "MONITOR_INTERVAL_SECONDS": "1",
             "REPLICATION_FACTOR": "3",
+            "REPAIR_INTERVAL_SECONDS": "1",
+            "REPAIR_CLAIM_SECONDS": "180",
             "MAX_TRANSFER_BYTES": "1048576",
             "ALLOWED_STORAGE_ADDRESSES": ",".join(node_urls),
             "DCOMP_BACKEND": "http",
@@ -182,8 +184,31 @@ def main() -> int:
                 if recovered_after_failure.read_bytes() != data:
                     raise RuntimeError("Download após falha divergiu")
                 print("OK  Download via outras réplicas após queda de um nó.")
-                print("RESULTADO: fluxo HTTP N=3 real aprovado, sem Docker e sem PostgreSQL.")
-                print("NOTA: este teste não comprova re-replicação automática ou durabilidade entre máquinas.")
+
+                def healed() -> bool:
+                    info = client.get(
+                        f"{controller_url}/files/metadata",
+                        params={"path": "/smoke.bin"},
+                    ).json()
+                    return (
+                        info["status"] == "HEALTHY"
+                        and len(info["replicas"]) == 3
+                        and failed_node not in {r["node_id"] for r in info["replicas"]}
+                    )
+
+                ensure(healed, "O cluster não reconstruiu N=3 automaticamente", deadline=30)
+                healed_meta = client.get(
+                    f"{controller_url}/files/metadata",
+                    params={"path": "/smoke.bin"},
+                ).json()
+                for replica in healed_meta["replicas"]:
+                    file_path = root / replica["node_id"] / "objects" / object_id
+                    if not file_path.exists() or file_path.read_bytes() != data:
+                        raise RuntimeError(f"Réplica reconstruída inválida: {file_path}")
+                print("OK  Terceira réplica reconstruída automaticamente em outro nó.")
+                print("OK  Três cópias físicas íntegrias após a falha.")
+                print("RESULTADO: fluxo N=3 e re-replicação automática aprovados, sem Docker.")
+                print("NOTA: os nós ainda são processos na mesma máquina; a persistência PostgreSQL não foi testada.")
                 return 0
         except Exception as exc:
             print(f"FALHA: {exc}", file=sys.stderr)

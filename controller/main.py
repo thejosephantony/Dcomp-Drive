@@ -14,6 +14,7 @@ from controller.file_api import router as files_router
 from controller.file_transfer import router as transfer_router
 from controller.models import Disk, Node
 from controller.monitor import monitor_forever, recalculate_status
+from controller.repair import repair_forever
 from controller.schemas import ClusterStatus, Heartbeat, NodeRegistration, NodeStatus
 
 logging.basicConfig(level=logging.INFO)
@@ -21,15 +22,18 @@ logging.basicConfig(level=logging.INFO)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(monitor_forever())
+    monitor_task = asyncio.create_task(monitor_forever())
+    repair_task = asyncio.create_task(repair_forever())
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        monitor_task.cancel()
+        repair_task.cancel()
+        for task in (monitor_task, repair_task):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(title="DComp Drive Controller", version="0.2.0", lifespan=lifespan)

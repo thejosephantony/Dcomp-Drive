@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -66,8 +66,13 @@ def choose_targets(session: Session, size_bytes: int, replicas: int, now: dateti
             select(Replica.disk_id, func.sum(FileVersion.size_bytes))
             .join(FileVersion, Replica.version_id == FileVersion.version_id)
             .where(
-                FileVersion.status == "PENDING",
-                FileVersion.expires_at > now,
+                or_(
+                    and_(
+                        FileVersion.status == "PENDING",
+                        FileVersion.expires_at > now,
+                    ),
+                    Replica.state == "REPAIRING",
+                )
             )
             .group_by(Replica.disk_id)
         ).all()
