@@ -1,126 +1,114 @@
-# DComp Drive — Relatório Técnico da Parte 1
+# DComp Drive — Relatório técnico da Parte 1
 
-**Universidade Federal de Sergipe • Sistemas Distribuídos • Prof. Rafael Oliveira Vasconcelos**  
-**Equipe:** Joseph Antony, Thayla Figueiredo e Jeferson Gonzaga  
-**Data:** 17/11/2026 | **Entrega da Parte 1:** 18/11/2026  
-**Versão:** relatório atualizado com evidências práticas de 17/11/2026; revisar paginação e exportar PDF final de 4–8 páginas antes da entrega.
+**Universidade Federal de Sergipe (UFS)** — Departamento de Computação, Sistemas Distribuídos (COMP0470).  
+**Professor:** Rafael Oliveira Vasconcelos.  
+**Integrantes:** Thayla Almeida Figueiredo; Joseph Antony dos Santos Leite; Jeferson Gonzaga dos Santos Filho.  
+**São Cristóvão (SE), 18 de novembro de 2026.**
 
-## 1. Escopo e arquitetura
+Esta é a versão **editável** do conteúdo técnico. O documento formatado para entrega é o PDF de **8 páginas**, denominado `DComp_Drive_Relatorio_Tecnico_Parte1_Entrega.pdf`, entregue separadamente; o arquivo Markdown não substitui o PDF.
 
-O DComp Drive implementa armazenamento distribuído com replicação N configurável, verificação de integridade por SHA-256, detecção de falhas e recuperação automática. O ambiente contém FastAPI (controlador e metadados), PostgreSQL persistente e cinco Storage Nodes em Docker Compose, cada um com volume próprio. A CLI opera em um serviço `client` opcional, que consulta o controlador para obter alocação e localização e transfere dados diretamente para os Storage Nodes.
+## Resumo
+
+O DComp Drive é um protótipo de armazenamento distribuído constituído de um controlador FastAPI, um banco PostgreSQL e cinco serviços Storage Node com volumes persistentes em Docker. O cliente CLI consulta o plano de controle para localizar as cópias e realiza transferência direta de dados com os nós. Implementa N configurável, hashes SHA-256, scrubbing, heartbeats, reparos, drain, reconciliação de nós e criptografia AES-256-GCM opcional. A execução integrada em uma EC2 aprovou 64 testes automatizados e ensaios de falha, retorno, concorrência, integridade, criptografia e N variável. Os cinco nós compartilham a mesma máquina física; a avaliação não demonstra resistência à perda da instância EC2.
+
+**Palavras-chave:** Sistemas distribuídos; armazenamento de arquivos; replicação; integridade de dados; recuperação de falhas.
+
+## 1. Introdução
+
+A replicação distribui cópias entre destinos lógicos independentes, enquanto metadados associam diretórios, caminhos, versões e hashes. Para que o armazenamento permaneça consistente durante interrupções, o controlador somente publica versões confirmadas e dispara reparações quando faltam réplicas. Os experimentos de carga quantitativa permanecem para a Parte 2, com entrega em 30/11/2026.
+
+## 2. Arquitetura do sistema
+
+O controlador FastAPI recebe requisições REST de controle e mantém metadados no PostgreSQL. Cinco Storage Nodes recebem diretamente os bytes da CLI, verificam integridade e persistem os objetos em volumes distintos.
 
 ```text
-CLIENTE (CLI direta) ------ metadados ------> CONTROLADOR FastAPI ---> PostgreSQL
-       |                                           ^  ^
-       | -- bytes de arquivo diretamente -->       |  |
-       +------> [Storage-1 ... Storage-5] -- ACKs/heartbeats/estado ------+
-                       volumes + SHA-256 + scrubbing + AES-GCM (opcional)
+                           /-- metadados --> PostgreSQL
+Cliente CLI -- REST/JSON -- Controlador FastAPI
+     |                              |
+     +---- HTTP PUT/GET ----> [storage-1 ... storage-5]
+                         volumes + SHA-256 + scrubbing + AES-GCM
 ```
 
-**Separação de planos:** o controlador coordena nomes, versões, estado de nós, espaço livre, alocação e reparação. A CLI direta transmite e recebe bytes dos Storage Nodes. O dashboard web opcional mantém um gateway legado que encaminha bytes via controlador; isso permanece uma limitação assumida.
+**Figura 1 — Diagrama textual dos componentes.** No PDF, a figura é representada graficamente.
 
-**Isolamento:** cinco máquinas *lógicas* distintas, mas no mesmo host AWS EC2. Isso simula falhas de contêiner/disco virtual, não a perda de uma máquina física inteira.
+O plano de controle mantém namespace, versões, alocação, confirmações, heartbeat, estado e decisões de reparação; o plano de dados da CLI vai diretamente aos storages. O painel web opcional utiliza gateway do controlador para encaminhar os bytes e não representa separação estrita dos planos.
 
-## 2. Protocolos e formatos
+**Componentes:** controlador Python/FastAPI; PostgreSQL 17 para diretórios, versões, réplicas e inventário; cinco Storage Nodes Python/FastAPI e seus volumes; cliente CLI Python/httpx; Docker Compose para inicialização e rede privada.
 
-As chamadas de controle usam REST/JSON e os dados usam HTTP application/octet-stream.
+## 3. Protocolos, posicionamento e consistência
 
-| Fase | Chamada | Efeito |
-| --- | --- | --- |
-| Alocação | POST /files/prepare | Retorna write_id, versão, N destinos e reservas |
-| Escrita física | PUT /objects/{write_id} | Persistência, SHA-256 e ACK no controlador |
-| Confirmação | POST /files/uploads/{write_id}/ack | Associa nó, disco, tamanho e hash validado |
-| Publicação | POST /files/uploads/{write_id}/commit | Torna a versão COMMITTED após W=N ACKs |
-| Consulta | GET /files/metadata?path=... | Tamanho, data, hash, status, version_id, réplicas |
-| Leitura física | GET /objects/{version_id} | Bytes íntegros, diretamente para CLI |
-| Registro | POST /nodes/register e POST /nodes/{id}/heartbeat | Descoberta e capacidades |
-| Reconciliação | POST /nodes/{id}/reconcile | Recuperação de cópias após retorno |
-| Diagnóstico | GET /status e GET /metrics | Estados, reparos, latência e contagens |
+**Protocolo REST/JSON:** `POST /files/prepare` recebe `path`, `size_bytes`, `sha256` (64 dígitos hexadecimais) e `replication_factor` opcional. A resposta contém `write_id`, `desired_replicas` e `targets`, com `node_id`, `machine_id`, `disk_id` e `address`. A CLI realiza `PUT /objects/{write_id}` diretamente nos destinos, informando o SHA-256. Cada nó valida o conteúdo, envia ACK com nó/disco/tamanho/hash, e o controlador só executa o commit após N confirmações. A consulta `GET /files/metadata?path=...` informa versão, tamanho, data, hash, estado e localização. `GET /objects/{version_id}` recupera a versão íntegra. O corpo de arquivo usa `application/octet-stream`.
 
-Namespace: `ls`, `mkdir`, `rmdir`, `mv`, `rm`, `put`, `get`, `stat`, `status`. Diretórios e caminhos canônicos são persistidos no PostgreSQL. `mv` renomeia somente arquivos, atualizando metadados, sem cópia de conteúdo.
+**Política de posicionamento:** escolha de N destinos com `machine_id` distintos, sem repetição de disco, ordenados por capacidade disponível. Considera reservas PENDING/REPAIRING e um teto `MAX_DISK_USAGE_PERCENT`. Se N destinos não estiverem disponíveis, o controlador responde HTTP 507, sem publicar o arquivo. Foram confirmados N=3 e N=2, além das recusas para N=6 e carga acima do espaço disponível.
 
-## 3. Posicionamento, concorrência e consistência
+**Semântica de concorrência:** gravações criam versões `PENDING`; a versão acessível é a última `COMMITTED`. O PostgreSQL controla conflitos por bloqueios/transações. A consistência é forte para o **ponteiro de versão publicada**, com quórum de escrita **W=N**: nenhuma nova versão aparece ao leitor antes das N confirmações. No ensaio concorrente, duas escritas simultâneas receberam 201 e 409; doze leituras retornaram HTTP 200 e hashes de versões completas.
 
-Cada versão ocupa N nós/discos distintos, respeitando `machine_id`, reservas e percentual máximo de uso de disco. A seleção ordena candidatos elegíveis por espaço livre; quando não há N destinos, a gravação é rejeitada.
+**Decisão CAP:** sob partição que impeça obter W=N, o sistema recusa publicar uma nova escrita, priorizando a consistência da versão anunciada em vez da disponibilidade de escrita. A leitura depende do controlador e de uma cópia íntegra acessível. Não há transação distribuída atômica entre SQL e armazenamento físico; falhas podem deixar cópias órfãs até reconciliação.
 
-Semântica de consistência: o upload gera uma versão PENDING, e a versão atual só muda após N ACKs de réplicas verificadas, caracterizando **W = N**. Leituras referem-se sempre à versão publicada e validam SHA-256; não devolvem escritas parciais. O PostgreSQL usa transações, unicidade e bloqueios de linhas. Não existe transação atômica distribuída entre SQL e Storage Nodes: resíduos após interrupções exigem limpeza posterior, uma limitação conhecida.
+## 4. Integridade, criptografia e recuperação
 
-Em partições que impedem obter W=N, novas escritas podem ser recusadas, priorizando consistência do conteúdo publicado sobre disponibilidade de gravação. Leituras podem continuar enquanto metadados e alguma réplica íntegra permanecerem acessíveis (justificativa CAP).
+O SHA-256 é calculado sobre o conteúdo original e validado no upload, download e scrubbing periódico. Réplicas corrompidas não contam como saudáveis e são substituídas após verificação de uma cópia de origem. Um ensaio RF4 anterior detectou corrupção, recompôs N=3 e preservou o hash original.
 
-## 4. Integridade, scrubbing e cifra
+**AES-256-GCM:** a cifra ocorre no Storage Node antes da persistência. Cada objeto cifrado utiliza nonce aleatório de 96 bits, tag GCM de 128 bits e `object_id` como dado adicional autenticado. A chave de 256 bits é guardada em `ENCRYPTION_KEY_BASE64` no `.env` privado. O hash permanece sobre o texto claro; metadados locais indicam se o objeto é `AES-256-GCM` ou legado sem cifra. Na AWS, a inspeção encontrou `DCD1` no disco, sem o trecho original em texto claro; o download foi idêntico ao original. Não há KMS ou rotação automática; a chave deve ser preservada fora da EC2, em armazenamento seguro.
 
-O hash SHA-256 é calculado sobre **o texto claro original**, verificado ao gravar, ao ler e periodicamente por scrubbing. Uma réplica com hash divergente é marcada como CORRUPTED e reportada; o controlador deixa de contá-la como saudável, recompõe N e a descarta apenas após validar a substituta.
+**Falhas:** heartbeats classificam nós como HEALTHY, SUSPECT e DEAD. A re-replicação prioriza versões com menos réplicas vivas e respeita quantidade máxima de reparos e banda por transferência. O modo DRAINING impede novos posicionamentos e permite a migração das cópias. Ao retornar, o nó envia inventário; o controlador valida a integridade e descarta cópias obsoletas.
 
-A configuração `ENCRYPTION_ENABLED` permite AES-256-GCM com nonce aleatório de 96 bits e tag GCM de 128 bits, autenticando o ID físico como AAD. A chave de 256 bits é Base64 em `ENCRYPTION_KEY_BASE64`, exclusivamente no arquivo `.env` privado dos Storage Nodes. Com criptografia ligada, plaintext é acumulado temporariamente em memória e somente ciphertext é persistido em disco. A leitura cifra/decifra conforme o metadado do objeto e valida SHA-256 do plaintext; objetos antigos sem cifra continuam legíveis. Não há KMS ou rotação de chaves.
+## 5. Implementação e resultados na AWS
 
-## 5. Detecção de falhas, re-replicação, drain e retorno
+**Ambiente:** Ubuntu em uma EC2, um controlador, PostgreSQL e cinco storages em contêineres. Portas de banco e storages restritas à rede Docker; controlador publicado em 127.0.0.1. A suíte `pytest -q tests` resultou em **64 passed, 1 warning in 7.50s** no ensaio final informado.
 
-O controlador recebe heartbeats periódicos e classifica nós HEALTHY, SUSPECT ou DEAD por timeout. Quando há déficit de réplicas, seleciona novo nó elegível, valida origem e destino pelo SHA-256 e confirma a cópia. A prioridade favorece arquivos com **menos réplicas vivas**; `MAX_CONCURRENT_RECOVERIES` limita o número de reparos simultâneos e `REPAIR_BANDWIDTH_BYTES_PER_SEC` limita a velocidade **por transferência**.
-
-`drain` altera o nó para DRAINING, não cancela o estado nos heartbeats, impede novos uploads e migra réplicas antes da retirada planejada. Após retorno de um nó, o inventário é confrontado com metadados do controlador; cópias LOST são verificadas fisicamente para reaproveitamento, e versões conhecidas obsoletas podem ser descartadas. A descoberta dinâmica aceita nós com nome interno `storage-N:9000` na rede Docker sem editar a lista central.
-
-## 6. Persistência, visibilidade e logs
-
-PostgreSQL armazena árvore de diretórios, mapa de arquivos, versões, réplicas, nós e discos. Volumes nomeados preservam banco e objetos após a recriação dos contêineres. `/status` mostra nós/discos, arquivos por estado e reparos ativos; `/metrics` agrega contagens de réplicas, requisições, latência média e bytes do gateway. Logs estruturados em JSON têm timestamp UTC, componente, evento, nível e identificadores.
-
-## 7. Evidências práticas obtidas na AWS (17/11/2026)
-
-**Ambiente:** instância EC2 Ubuntu, Docker Compose com cinco storages e PostgreSQL; branch `feature/parte1-rf9-direct-client`, commit `14a6976` nos ensaios. **Suíte integrada: 64 testes aprovados, um aviso de depreciação, em 7,36 segundos.** A versão anterior havia aprovado 52 testes e comprovado RF1/RF4.
-
-- **RF1/RF3 e separação de planos:** upload de 46 bytes via CLI Docker com N=3, três nós distintos, download direto e `cmp` confirmando identidade byte a byte. SHA-256: `2984f43aa700834411dbf9d0ef6d2e0efdce513ec035f8f9111726a98bfb9af9`.
-- **RF5 — falha:** após `docker compose stop storage-2`, logs registraram `HEALTHY → SUSPECT → DEAD`, seguidos de eventos `repair_completed`; os seis arquivos continuaram saudáveis após reparação, sem indisponibilidade. Download conservou o SHA-256.
-- **RF6 — retorno:** `docker compose start storage-2` resultou em `node_reconciled` com `restored=0, discarded=5, skipped=0`: cinco cópias antigas descartadas porque o cluster já havia restabelecido N em nós elegíveis.
-- **RF7 — drain:** storage-1 entrou em `DRAINING`; arquivos passaram temporariamente por `UNDER_REPLICATED`/`RECOVERING`, e a substituição ocorreu em storage-4. Ao término, seis arquivos `HEALTHY`, nenhum indisponível e storage-1 sem dados; `undrain` devolveu o nó a `HEALTHY`.
-- **RF8 — concorrência:** script `scripts/test_concurrency_live.py` retornou `PASS`; duas escritas concorrentes no mesmo caminho resultaram em HTTP 409 e HTTP 201; **12/12 leituras** deram HTTP 200 com hashes válidos e a versão final permaneceu íntegra. Ao final, oito arquivos `HEALTHY`.
-- **RF9 — AES-256-GCM:** dois testes específicos aprovados. Com `ENCRYPTION_ENABLED=true`, o arquivo de 42 bytes foi persistido em três nós. Inspeção de disco mostrou metadado `AES-256-GCM`, prefixo `DCD1` e ausência do texto claro. Download e `cmp` iguais; um arquivo antigo não cifrado continuou legível. A chave privada está em `.env` fora do Git.
-- **RF10:** persistência de cinco arquivos após reiniciar a instância EC2, sem perda de metadados ou das três réplicas. `pg_dump` e cinco tarballs de storage foram conferidos.
-- **RF11/RF12:** `/status` mostrou nós, discos, capacidades, estados e reparos; `/metrics` mostrou latência, uptime e contagens. Logs JSON apresentaram `timestamp`, `component`, `event`, `level` e identificadores, incluindo reconciliação e recuperação.
-
-**RF3 e capacidade na EC2:** execução de `scripts/test_rf3_allocation_live.py` → `PASS`; replicação **N=2** em storage-4 e storage-3, discos e machine_ids distintos, leitura com SHA-256 válido. Pedidos de **N=6** e de arquivo maior que a capacidade resultaram em **HTTP 507**. A primeira tentativa foi feita imediatamente após reinicialização do FastAPI e recebeu conexão recusada; após o health check, o teste passou. Os **64 testes** passaram novamente em **7,50 s** (um aviso). Esse ensaio cria mais um arquivo, além dos oito anteriores.
-
-O teste de corrupção anterior do **RF4** detectou uma cópia danificada por scrubbing, recompôs o fator N=3 e preservou o SHA-256 `c538961c3614bf69bafac27ac120868bbbde2d3014b01aa8fbc8c26cd9926f2e`. É necessário incluir a sequência de corrupção/reparação no vídeo ou demonstração presencial.
-
-**Registro detalhado:** `docs/evidencias/parte1/aws-validacao-integrada-2026-11-17.md`. Não confundir testes funcionais com medição de disponibilidade em falhas físicas ou com auditoria de segurança.
-
-## 8. Limitações conhecidas
-
-- Cinco storages no mesmo host físico, sem tolerância à perda de toda a EC2.
-- Controlador e PostgreSQL únicos: reinicialização possível, mas não alta disponibilidade.
-- `rm` não mantém fila durável de limpeza se um nó estiver indisponível.
-- Cliente direto e reparador carregam objetos completos em memória; não existe chunking independente.
-- Gateway do dashboard ainda encaminha bytes pelo controlador; apenas CLI direta separa plano de dados.
-- Limite de banda de recuperação é por tarefa, não garantia de limite agregado.
-- Sem autenticação de usuários, autorização por arquivo, TLS interno, KMS ou rotação criptográfica.
-- A operação `mv` não move diretórios inteiros; somente arquivos.
-- A execução ao vivo comprovou concorrência e AES-GCM, mas **entrada de nó adicional** ainda não foi demonstrada em ensaio próprio. Já houve execução real do script `scripts/test_rf3_allocation_live.py` com N=2 e rejeição HTTP 507 para N=6/capacidade insuficiente.
-- O relatório documenta N de contêineres distintos no mesmo host, não sobrevivência a falha de máquina física.
-- Os contadores de tráfego do controlador não incluem o caminho direto CLI–Storage.
-
-## 9. Divisão de tarefas e comunicação
-
-- **Joseph Antony:** arquitetura, controlador e metadados, PostgreSQL, AWS, interface web, integração.
-- **Thayla Figueiredo:** Storage Nodes, persistência física, hash, scrubbing e gerenciamento de capacidade.
-- **Jeferson Gonzaga:** CLI, protocolos de comunicação, recuperação de falhas e testes.
-
-Todos devem manter contribuições atribuídas corretamente no Git e revisar o relatório antes da entrega. Os PRs permanecem empilhados até serem integrados com histórico preservado.
-
-## 10. Matriz RF1–RF12 e entregáveis
-
-| Código | Evidência comprovada / ressalvas |
+| Ensaio | Resultado observado |
 | --- | --- |
-| RF1 | Operações de namespace, estatísticas, SHA-256, data, cópias e estados; upload/download comprovados na AWS |
-| RF2 | CLI direta, endpoints REST e interface web opcional |
-| RF3 | N=3 e N=2 comprovados, nós/discos lógicos distintos; N=6 rejeitado por HTTP 507 |
-| RF4 | SHA-256, scrubbing e corrupção/reparação comprovados em ensaio anterior |
-| RF5 | Falha real, substituição e retomada N=3; prioridade e limites têm testes automatizados |
-| RF6 | Registro, retorno e reconciliação comprovados, com cinco cópias obsoletas descartadas |
-| RF7 | Drain completo comprovado; pedido além da capacidade rejeitado por HTTP 507 |
-| RF8 | Concorrência real: duas escritas (409/201) e 12 leituras íntegras, PASS |
-| RF9 | AES-256-GCM em disco, download idêntico, leitura retrocompatível, testes aprovados |
-| RF10 | Persistência após reinicialização da EC2 e backups conferidos |
-| RF11 | /status e /metrics demonstrados; métricas de tráfego direto não agregadas |
-| RF12 | Logs JSON de heartbeat, reparo, scrubbing e reconciliação demonstrados |
+| Transferência direta N=3 | 46 bytes em três nós; SHA-256 e comparação binária idênticos |
+| RF7 — Drain | storage-1 em DRAINING; réplicas migradas; seis arquivos HEALTHY; undrain |
+| RF5 — Falha | storage-2 passou HEALTHY → SUSPECT → DEAD; reparação automática |
+| RF6 — Retorno | node_reconciled com restored=0, discarded=5, skipped=0 |
+| RF8 — Concorrência | Uma escrita HTTP 201, uma 409; 12/12 leituras com hashes válidos; PASS |
+| RF9 — Criptografia | AES-256-GCM em três storages, plaintext ausente no disco, download idêntico; legado legível |
+| RF3/RF7 — N e capacidade | N=2 publicado em storage-4/storage-3, SHA verificado; N=6 e capacidade insuficiente deram 507 |
+| RF10 — Persistência | Cinco arquivos preservados após reinício e backups do banco e cinco storages verificados |
+| RF11/RF12 | /status, /metrics e logs JSON demonstrados |
 
-Entregáveis: repositório com contribuições da equipe, README, **relatório PDF com 4 a 8 páginas**, Compose com 1 controlador e ao menos 5 Storage Nodes e **vídeo até 5 minutos ou apresentação presencial** com upload N, leitura, queda/reparo e corrupção detectada.
+As evidências detalhadas e os comandos encontram-se em `docs/evidencias/parte1/aws-validacao-integrada-2026-11-17.md` e `scripts/`.
 
-**Fonte:** enunciado oficial da disciplina, *Atividade Prática: Sistema Distribuído de Armazenamento de Arquivos* (UFS, 2026), páginas 1–5. A Parte 2, com medições e análise experimental, vence em 30/11/2026.
+## 6. Conformidade, limitações e dimensionamento
+
+Os RF1 a RF12 possuem implementação e testes compatíveis com o protótipo; os ensaios acima registram o escopo efetivamente observado. O RF4 foi ensaiado anteriormente; a demonstração obrigatória de corrupção ainda precisa constar no vídeo ou ocorrer presencialmente. A entrada de um sexto nó, sem reinício do controlador, ainda não foi demonstrada em teste específico.
+
+Todos os storages residem numa única EC2: não há tolerância à perda desse host físico nem alta disponibilidade do controlador/PostgreSQL. CLI e reparador mantêm arquivos inteiros em memória; não há chunking por objeto para cargas muito grandes. O painel web ainda usa gateway do controlador, e os contadores de tráfego do gateway não incluem bytes enviados diretamente pela CLI. Sem autenticação individual, TLS interno, KMS e rotação de chaves. A remoção de arquivos não dispõe de fila durável de limpeza física; `mv` não move diretórios.
+
+O laboratório validou cinco nós e uma quantidade pequena de arquivos. **A Parte 2 poderá avaliar oito nós e mil arquivos pequenos como cenários planejados**, sem que isso represente capacidade já medida ou garantida.
+
+### 6.1 Divisão de tarefas
+
+- **Thayla Almeida Figueiredo:** implementação dos Storage Nodes, persistência física, SHA-256, scrubbing e capacidade.
+- **Joseph Antony dos Santos Leite:** arquitetura, controlador e metadados, PostgreSQL, implantação na AWS, interface web e integração.
+- **Jeferson Gonzaga dos Santos Filho:** CLI, protocolos de comunicação, recuperação de falhas e testes.
+
+A equipe deve validar a correspondência dessa divisão com a autoria real no histórico Git antes da submissão.
+
+## 7. Execução e reprodução
+
+```bash
+cp .env.example .env            # definir POSTGRES_PASSWORD em segredo
+mkdir -p demo-files
+docker compose config --quiet
+docker compose up -d --build
+curl -fsS http://127.0.0.1:8000/health
+docker compose exec -T controller python -m pytest -q tests
+docker compose exec -T controller python scripts/test_concurrency_live.py
+docker compose exec -T controller python scripts/test_rf3_allocation_live.py
+docker compose run --rm client status
+```
+
+Os serviços demoram a ficar prontos após a migração do banco: aguardar o `/health` antes dos scripts. Não executar `docker compose down -v` com dados a preservar; não publicar chaves ou banco na internet.
+
+## 8. Considerações finais
+
+A validação demonstra publicação de versões com N confirmações, leitura íntegra, recuperação após falha de storage, reconciliação, drain e criptografia autenticada, nos limites da simulação. A Parte 2 avaliará desempenho e escalabilidade quantitativos. A entrega da Parte 1 inclui PDF de 8 páginas e vídeo de até 5 minutos ou apresentação presencial, contendo gravação replicada, leitura, falha com recuperação e corrupção detectada.
+
+## Referências
+
+UNIVERSIDADE FEDERAL DE SERGIPE. **Atividade prática: sistema distribuído de armazenamento de arquivos**. Enunciado da disciplina Sistemas Distribuídos — COMP0470. São Cristóvão, 2026.
+
+EQUIPE DCOMP DRIVE. **DComp Drive: código-fonte, documentação e testes**. Repositório GitHub, 2026. Disponível em: https://github.com/thejosephantony/Dcomp-Drive.
