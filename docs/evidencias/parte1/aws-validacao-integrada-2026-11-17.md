@@ -12,6 +12,15 @@
 - `get` retornou o arquivo; `sha256sum` original e recuperado foram iguais a `2984f43aa700834411dbf9d0ef6d2e0efdce513ec035f8f9111726a98bfb9af9`; `cmp` confirmou bytes idênticos.
 - A CLI direta usa o controlador para metadados e PUT/GET físicos com storages privados; o painel web usa gateway separado. Os cinco nós são **lógicos no mesmo host EC2** (não domínios de falha físicos).
 
+## RF3 e limite de capacidade RF7 — replicação N configurável (execução adicional)
+
+- `sudo docker compose exec -T controller python scripts/test_rf3_allocation_live.py` → **`result: PASS`** em 17/11/2026.
+- Solicitação de **N=2** publicada em `/rf3-n2-demo.bin`, estado `HEALTHY`, cópias em **storage-4 / storage-4-disk0** e **storage-3 / storage-3-disk0**, machine_ids distintos, com SHA-256 conferido após download.
+- Solicitação de **N=6** recusada com **HTTP 507**, por não haver seis máquinas lógicas elegíveis.
+- Solicitação de arquivo maior que a capacidade elegível recusada com **HTTP 507**.
+- Após reiniciar o controlador, a primeira tentativa teve `httpx.ConnectError: [Errno 111] Connection refused` porque o FastAPI ainda não estava pronto. Com `GET /health` respondendo `{"status":"ok"}`, o mesmo script retornou **PASS**, sem alterações nos dados preexistentes.
+- Nova suíte executada na EC2: **64 passed, 1 warning in 7.50s**. Antes do RF3, os oito arquivos estavam `HEALTHY`; o RF3 cria mais um arquivo de demonstração, ainda sem status completo posterior fornecido.
+
 ## RF7 — drain planejado
 - `docker compose run --rm client drain storage-1` → estado `DRAINING` visível em `/status`; durante migração havia arquivos `UNDER_REPLICATED` e `RECOVERING`.
 - Cópia do arquivo direto foi migrada de storage-1 para storage-4; ao final seis arquivos `HEALTHY`, nenhum indisponível e storage-1 com zero bytes. `POST /nodes/storage-1/undrain` → `HEALTHY`.
@@ -39,7 +48,7 @@
 - Logs de storage e controlador são JSON com `timestamp`, `component`, `level`, `event`, `message` e identificadores, incluindo `repair_completed`, `node_reconciled` e `scrub_completed`.
 
 ## Pendências / limites que não devem ser declarados comprovados
-1. Validar configuração **N diferente de 3** e rejeição por falta de destinos/capacidade na EC2 (há implementação e testes unitários).
+1. **RF3 e rejeição por falta de destinos/capacidade foram validados na EC2 (N=2, ambos os HTTP 507).** Permanecem relevantes testes mais amplos de stress, múltiplos discos físicos e métricas de Parte 2.
 2. Registrar evidência do teste de corrupção RF4 no vídeo de demonstração; houve ensaio real anterior com recuperação, mas não foi repetido no mesmo bloco integrado.
 3. O experimento usa **uma EC2 e contêineres distintos**, não cinco máquinas físicas. Não demonstra sobrevivência à perda do host.
 4. Contadores de tráfego do controlador não contabilizam o tráfego direto CLI↔Storage Nodes.
