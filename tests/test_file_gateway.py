@@ -364,7 +364,7 @@ def test_corruption_report_drives_automatic_repair(cluster, monkeypatch):
     def reported_metadata(url, *, timeout):
         assert url.endswith("/objects/" + write_id + "/meta")
         assert urlsplit(url).hostname == first_node
-        return httpx.Response(200, json={
+        return httpx.Response(200, request=httpx.Request("GET", url), json={
             "object_id": write_id,
             "sha256": hashlib.sha256(data).hexdigest(),
             "size_bytes": len(data),
@@ -417,7 +417,7 @@ def test_corruption_report_rejects_healthy_replica(cluster, monkeypatch):
         write_id = session.query(FileVersion.version_id).one()[0]
 
     def healthy_metadata(url, *, timeout):
-        return httpx.Response(200, json={
+        return httpx.Response(200, request=httpx.Request("GET", url), json={
             "object_id": write_id,
             "sha256": hashlib.sha256(b"OK").hexdigest(),
             "size_bytes": 2,
