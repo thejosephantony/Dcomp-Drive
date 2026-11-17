@@ -36,6 +36,21 @@ services:
       postgres:
         condition: service_healthy
 
+  # CLI isolada na mesma rede Docker: cliente -> Storage Nodes diretamente.
+  # Não participa do 'docker compose up' por usar um profile opcional.
+  client:
+    profiles: ["cli"]
+    build: .
+    entrypoint: ["python", "-m", "client.cli"]
+    environment:
+      DCOMP_BACKEND: http
+      DCOMP_CONTROLLER_URL: http://controller:8000
+      DCOMP_DIRECT_STORAGE: "true"
+    volumes:
+      - ./demo-files:/work
+    depends_on:
+      - controller
+
   storage-1: &storage
     build: .
     command: uvicorn storage.main:app --host 0.0.0.0 --port 9000
@@ -46,6 +61,8 @@ services:
       CONTROLLER_URL: http://controller:8000
       HEARTBEAT_INTERVAL_SECONDS: "2"
       SCRUB_INTERVAL_SECONDS: "${SCRUB_INTERVAL_SECONDS:-15}"
+      ENCRYPTION_ENABLED: "${ENCRYPTION_ENABLED:-false}"
+      ENCRYPTION_KEY_BASE64: "${ENCRYPTION_KEY_BASE64:-}"
       DATA_DIR: /data
     volumes: [storage1_data:/data]
     depends_on:

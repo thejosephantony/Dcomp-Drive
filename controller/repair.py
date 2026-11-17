@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from controller.database import SessionLocal
 from controller.file_models import FileEntry, FileVersion, Replica
-from controller.file_transfer import _limit, _storage_url, _timeout
+from controller.file_transfer import _storage_url, _timeout
 from controller.models import Node
 
 logger = logging.getLogger(__name__)
@@ -132,8 +132,6 @@ def _claim_one(session: Session, now: datetime | None = None) -> RepairJob | Non
     ))
 
     for version in versions:
-        if version.size_bytes > _limit():
-            continue
         replicas = session.scalars(
             select(Replica)
             .where(Replica.version_id == version.version_id)

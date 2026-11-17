@@ -13,6 +13,9 @@ import shutil
 import time
 import uuid
 
+from storage.crypto import (
+    AuthenticationFailureError, EncryptionUnavailableError, MAGIC, StorageCipher,
+)
 from storage.schemas import (
     ObjectMetadata,
     ScrubReport,
@@ -92,6 +95,7 @@ class ObjectStore:
         self.disk_id = disk_id
         self._capacity_bytes = capacity_bytes
         self.max_disk_usage_percent = max_disk_usage_percent
+        self._cipher = StorageCipher()
 
         self.objects_dir = self.data_dir / "objects"
         self.meta_dir = self.data_dir / "meta"
@@ -146,6 +150,14 @@ class ObjectStore:
             if obj_id not in self._cache:
                 try:
                     validate_object_id_str(obj_id)
+                    with open(obj_file, "rb") as source:
+                        is_encrypted_orphan = source.read(4) == MAGIC
+                    if is_encrypted_orphan:
+                        logger.warning(
+                            "reconcile_encrypted_orphan_skipped node=%s object_id=%s",
+                            self.node_id, obj_id,
+                        )
+                        continue
                     digest, size = compute_file_sha256(obj_file)
                     now_str = datetime.now(timezone.utc).isoformat()
                     recovered_meta = ObjectMetadata(
@@ -188,7 +200,12 @@ class ObjectStore:
             return 10 * 1024 * 1024 * 1024  # Fallback de 10 GB se disk_usage falhar
 
     def get_used_bytes(self) -> int:
-        return sum(meta.size_bytes for meta in self._cache.values())
+        # Conta bytes físicos reais, inclusive nonce/tag GCM quando cifrado.
+        total = 0
+        for meta in self._cache.values():
+            file = self.objects_dir / meta.object_id
+            total += file.stat().st_size if file.exists() else meta.size_bytes
+        return total
 
     def get_max_allowed_bytes(self) -> int:
         return self.get_capacity_bytes() * self.max_disk_usage_percent // 100
@@ -218,6 +235,14 @@ class ObjectStore:
         tmp_meta.replace(target_meta)
         _sync_dir(self.meta_dir)
         self._cache[meta.object_id] = meta
+
+    def _physical_digest(
+        self, meta: ObjectMetadata, path: Path
+    ) -> tuple[str, int]:
+        if meta.encryption == "AES-256-GCM":
+            clear = self._cipher.decrypt(meta.object_id, path.read_bytes())
+            return hashlib.sha256(clear).hexdigest(), len(clear)
+        return compute_file_sha256(path)
 
     async def put(
         self,
@@ -249,6 +274,9 @@ class ObjectStore:
             tmp_path = self.tmp_dir / f"{object_id}_{uuid.uuid4().hex}.tmp"
             hasher = hashlib.sha256()
             bytes_written = 0
+            # Com cifra habilitada, dados claros ficam APENAS em RAM.
+            # O arquivo temporário nunca recebe conteúdo não cifrado.
+            clear_buffer = bytearray() if self._cipher.enabled else None
 
             try:
                 with open(tmp_path, "wb") as f:
@@ -260,7 +288,10 @@ class ObjectStore:
                         if needed > self.get_free_bytes():
                             raise InsufficientStorageError("Capacidade do nó excedida durante gravação")
                         hasher.update(chunk)
-                        f.write(chunk)
+                        if clear_buffer is not None:
+                            clear_buffer.extend(chunk)
+                        else:
+                            f.write(chunk)
                     # Força gravação física dos dados dos buffers do SO para o disco antes do replace
                     _sync_file(f)
 
@@ -272,6 +303,17 @@ class ObjectStore:
                         raise HashMismatchError(
                             f"Hash SHA-256 diverge: esperado '{normalized_expected}', calculado '{computed_hash}'"
                         )
+
+                if self._cipher.enabled:
+                    # SHA-256 já foi validado sobre texto claro. O disco recebe
+                    # SOMENTE ciphertext autenticado com nonce exclusivo por gravação.
+                    encrypted = self._cipher.encrypt(object_id, bytes(clear_buffer))
+                    additional = len(encrypted) - previous_size
+                    if additional > self.get_free_bytes():
+                        raise InsufficientStorageError("Capacidade insuficiente para nonce/tag AES-GCM")
+                    with open(tmp_path, "wb") as f:
+                        f.write(encrypted)
+                        _sync_file(f)
 
                 # Persistência atômica: substituição do arquivo definitivo somente após validação completa
                 target_path = self.objects_dir / object_id
@@ -286,6 +328,7 @@ class ObjectStore:
                     created_at=now_str,
                     last_scrubbed_at=None,
                     status="HEALTHY",
+                    encryption="AES-256-GCM" if self._cipher.enabled else "none",
                 )
                 self._save_metadata(meta)
                 logger.info(
@@ -319,11 +362,30 @@ class ObjectStore:
                 f"Objeto {object_id} corrompido: hash em disco diverge do metadado ({meta.sha256})"
             )
 
-        if verify:
-            # Verificação prévia e incremental de integridade por SHA-256 antes da liberação do stream
-            current_hash, _ = compute_file_sha256(object_path)
+        clear_data: bytes | None = None
+        if meta.encryption == "AES-256-GCM":
+            try:
+                clear_data = self._cipher.decrypt(object_id, object_path.read_bytes())
+            except AuthenticationFailureError as exc:
+                meta.status = "CORRUPTED"
+                self._save_metadata(meta)
+                raise CorruptedObjectError(
+                    f"Falha de autenticação AES-GCM do objeto {object_id}"
+                ) from exc
 
-            if current_hash != meta.sha256.lower():
+        if verify:
+            # O SHA-256 é sobre o TEXTO CLARO, inclusive com AES-GCM ativado.
+            current_hash = (
+                hashlib.sha256(clear_data).hexdigest()
+                if clear_data is not None
+                else compute_file_sha256(object_path)[0]
+            )
+            current_size = (
+                len(clear_data) if clear_data is not None
+                else object_path.stat().st_size
+            )
+
+            if current_hash != meta.sha256.lower() or current_size != meta.size_bytes:
                 meta.status = "CORRUPTED"
                 self._save_metadata(meta)
                 logger.error(
@@ -338,9 +400,13 @@ class ObjectStore:
                 )
 
         async def file_chunks() -> AsyncIterator[bytes]:
-            with open(object_path, "rb") as f:
-                while chunk := f.read(65536):
-                    yield chunk
+            if clear_data is not None:
+                for offset in range(0, len(clear_data), 65536):
+                    yield clear_data[offset:offset + 65536]
+            else:
+                with open(object_path, "rb") as f:
+                    while chunk := f.read(65536):
+                        yield chunk
 
         return meta, file_chunks()
 
@@ -409,10 +475,13 @@ class ObjectStore:
                         logger.error("scrub_file_missing node=%s object_id=%s", self.node_id, obj_id)
                         continue
 
-                    current_hash, _ = compute_file_sha256(obj_path)
+                    try:
+                        current_hash, size = self._physical_digest(meta, obj_path)
+                    except AuthenticationFailureError:
+                        current_hash, size = "AUTHENTICATION_FAILED", -1
 
                     meta.last_scrubbed_at = now_str
-                    if current_hash == meta.sha256.lower():
+                    if current_hash == meta.sha256.lower() and size == meta.size_bytes:
                         meta.status = "HEALTHY"
                         healthy_count += 1
                     else:
@@ -427,6 +496,11 @@ class ObjectStore:
                             current_hash,
                         )
                     self._save_metadata(meta)
+            except EncryptionUnavailableError:
+                logger.warning(
+                    "scrub_skipped_missing_encryption_key node=%s object_id=%s",
+                    self.node_id, obj_id,
+                )
             except Exception as exc:
                 # Falha individual tratada sem abortar a verificação dos outros objetos
                 logger.exception("scrub_object_error node=%s object_id=%s error=%s", self.node_id, obj_id, exc)
@@ -474,8 +548,14 @@ class ObjectStore:
                 self._save_metadata(meta)
                 return False, meta.sha256, "", meta
 
-            computed_hash, _ = compute_file_sha256(obj_path)
-            is_valid = (computed_hash == meta.sha256.lower())
+            try:
+                computed_hash, size = self._physical_digest(meta, obj_path)
+            except AuthenticationFailureError:
+                computed_hash, size = "AUTHENTICATION_FAILED", -1
+            is_valid = (
+                computed_hash == meta.sha256.lower()
+                and size == meta.size_bytes
+            )
             new_status = "HEALTHY" if is_valid else "CORRUPTED"
             if meta.status != new_status:
                 meta.status = new_status

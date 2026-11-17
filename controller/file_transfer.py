@@ -9,6 +9,7 @@ sem autenticação de usuário e sem recomposição automática de réplicas.
 import hashlib
 import logging
 import os
+import re
 from urllib.parse import urlsplit
 
 import httpx
@@ -46,14 +47,6 @@ def _storage_url(address: str) -> str:
     Evita que registros arbitrários de nós virem requisições HTTP do
     controlador contra serviços internos (SSRF).
     """
-    allowed = {
-        item.strip().rstrip("/")
-        for item in os.getenv(
-            "ALLOWED_STORAGE_ADDRESSES",
-            ",".join(f"http://storage-{i}:9000" for i in range(1, 6)),
-        ).split(",")
-        if item.strip()
-    }
     cleaned = address.strip().rstrip("/")
     try:
         parsed = urlsplit(cleaned)
@@ -69,7 +62,21 @@ def _storage_url(address: str) -> str:
         )
     except ValueError:
         valid = False
-    if not valid or cleaned not in allowed:
+    configured = os.getenv("ALLOWED_STORAGE_ADDRESSES", "").strip()
+    if configured:
+        allowed = {item.strip().rstrip("/") for item in configured.split(",")
+                   if item.strip()}
+        authorized = cleaned in allowed
+    else:
+        # RF6: novos serviços storage-N na rede Docker não exigem editar
+        # a configuração central, mas IPs/hosts arbitrários continuam vetados.
+        authorized = bool(valid and (
+            parsed.scheme == "http"
+            and parsed.port == 9000
+            and parsed.hostname is not None
+            and re.fullmatch(r"storage-[1-9][0-9]*", parsed.hostname)
+        ))
+    if not valid or not authorized:
         raise HTTPException(502, "Endereço de Storage Node não autorizado")
     return cleaned
 

@@ -308,7 +308,7 @@ def metadata(path: str = Query(...), session: Session = Depends(get_session)) ->
     )
     return FileMetadataResponse(
         path=entry.path, version=version.version, sha256=version.sha256,
-        created_at=version.created_at,
+        created_at=version.created_at, version_id=version.version_id,
         size_bytes=version.size_bytes,
         replication_factor=version.replication_factor,
         status=state, replicas=healthy,

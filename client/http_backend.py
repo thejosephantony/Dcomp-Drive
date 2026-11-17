@@ -5,6 +5,8 @@ Storage Nodes. Operações de namespace usam metadados PostgreSQL; drain ainda i
 """
 import hashlib
 import os
+import re
+from urllib.parse import urlsplit
 from pathlib import Path
 import tempfile
 
@@ -29,6 +31,33 @@ class HttpBackend:
             controller_url or os.getenv("DCOMP_CONTROLLER_URL", "http://127.0.0.1:8000")
         ).rstrip("/")
         self.transport = transport
+        self.direct_storage = os.getenv("DCOMP_DIRECT_STORAGE", "false").lower() in (
+            "1", "true", "yes",
+        )
+
+    def _storage_address(self, address: str) -> str:
+        """Somente nós do espaço de nomes interno Docker são elegíveis (anti-SSRF)."""
+        cleaned = address.strip().rstrip("/")
+        parsed = urlsplit(cleaned)
+        if not (
+            parsed.scheme == "http" and parsed.port == 9000
+            and parsed.hostname is not None
+            and re.fullmatch(r"storage-[1-9][0-9]*", parsed.hostname)
+            and parsed.username is None and parsed.password is None
+            and not parsed.path and not parsed.query and not parsed.fragment
+        ):
+            raise CLIError("SECURITY", "Endereço de Storage Node não autorizado")
+        return cleaned
+
+    def _request_storage(self, method: str, address: str, **kwargs) -> httpx.Response:
+        try:
+            with httpx.Client(
+                timeout=httpx.Timeout(65.0, connect=5.0),
+                transport=self.transport,
+            ) as client:
+                return client.request(method, address, **kwargs)
+        except httpx.RequestError as exc:
+            raise UnavailableError(f"Storage Node indisponível: {exc}") from exc
 
     def _request(self, method: str, endpoint: str, **kwargs) -> httpx.Response:
         try:
@@ -79,6 +108,8 @@ class HttpBackend:
         except OSError as exc:
             raise CLIError("LOCAL", f"Falha ao ler {local_path}: {exc}") from exc
         local_sha256 = hashlib.sha256(contents).hexdigest()
+        if self.direct_storage:
+            return self._put_direct(remote_path, contents, local_sha256)
         response = self._request(
             "PUT", "/files/content",
             params={"path": remote_path}, content=contents,
@@ -88,16 +119,104 @@ class HttpBackend:
             raise CLIError("INTEGRITY", "Metadados retornados não conferem com o upload")
         return info
 
+    def _put_direct(self, remote_path: str, data: bytes, sha256: str) -> FileMetadata:
+        """Fluxo RF3: controlador só aloca e publica metadados.
+
+        Todos os PUTs e verificações físicas são realizados pela CLI nos nós.
+        """
+        prepared = self._request(
+            "POST", "/files/prepare",
+            json={"path": remote_path, "sha256": sha256, "size_bytes": len(data)},
+        ).json()
+        write_id = prepared["write_id"]
+        stored_at: list[str] = []
+        try:
+            for target in prepared["targets"]:
+                address = self._storage_address(target["address"])
+                url = f"{address}/objects/{write_id}"
+                result = self._request_storage(
+                    "PUT", url,
+                    content=data,
+                    headers={"X-Expected-Sha256": sha256, "X-Write-Id": write_id},
+                )
+                if result.status_code != 201:
+                    raise CLIError("STORAGE", f"Falha de gravação no {target['node_id']} (HTTP {result.status_code})")
+                stored_at.append(address)
+                info = result.json()
+                if (
+                    info.get("node_id") != target["node_id"]
+                    or info.get("sha256") != sha256
+                    or info.get("size_bytes") != len(data)
+                    or info.get("controller_acked") is not True
+                ):
+                    raise CLIError("INTEGRITY", f"ACK inválido no {target['node_id']}")
+
+                check = self._request_storage("GET", f"{url}/verify")
+                if check.status_code != 200:
+                    raise CLIError("INTEGRITY", f"Verificação física falhou no {target['node_id']}")
+                proof = check.json()
+                if (
+                    proof.get("match") is not True
+                    or proof.get("expected_sha256") != sha256
+                    or proof.get("size_bytes") != len(data)
+                ):
+                    raise CLIError("INTEGRITY", f"Hash físico inválido no {target['node_id']}")
+
+            self._request("POST", f"/files/uploads/{write_id}/commit")
+            return self.stat(remote_path)
+        except Exception:
+            # Nunca apagar objetos de uma versão possivelmente publicada.
+            try:
+                state = self._request("GET", f"/files/uploads/{write_id}").json()
+            except CLIError:
+                state = {"status": "UNKNOWN"}
+            if state.get("status") == "PENDING":
+                try:
+                    self._request("POST", f"/files/uploads/{write_id}/abort")
+                except CLIError:
+                    pass
+                for address in stored_at:
+                    try:
+                        self._request_storage("DELETE", f"{address}/objects/{write_id}")
+                    except (CLIError, httpx.HTTPError):
+                        pass
+            raise
+
     def get(self, remote_path: str, local_path: Path) -> FileMetadata:
         info = self.stat(remote_path)
-        response = self._request("GET", "/files/content", params={"path": remote_path})
-        payload = response.content
-        if (
-            hashlib.sha256(payload).hexdigest() != info.sha256
-            or len(payload) != info.size
-            or response.headers.get("X-Sha256", info.sha256) != info.sha256
-        ):
-            raise CLIError("INTEGRITY", "Arquivo baixado não passou pela verificação SHA-256")
+        if self.direct_storage:
+            meta = self._request(
+                "GET", "/files/metadata", params={"path": remote_path}
+            ).json()
+            object_id = meta.get("version_id")
+            if not object_id:
+                raise CLIError("PROTOCOL", "Controlador não informou version_id")
+            payload = None
+            for replica in meta.get("replicas", []):
+                try:
+                    base = self._storage_address(replica["address"])
+                    response = self._request_storage("GET", f"{base}/objects/{object_id}")
+                    if (
+                        response.status_code == 200
+                        and len(response.content) == info.size
+                        and hashlib.sha256(response.content).hexdigest() == info.sha256
+                        and response.headers.get("X-Sha256", info.sha256) == info.sha256
+                    ):
+                        payload = response.content
+                        break
+                except (CLIError, ValueError):
+                    continue
+            if payload is None:
+                raise UnavailableError("Nenhuma réplica física íntegra disponível")
+        else:
+            response = self._request("GET", "/files/content", params={"path": remote_path})
+            payload = response.content
+            if (
+                hashlib.sha256(payload).hexdigest() != info.sha256
+                or len(payload) != info.size
+                or response.headers.get("X-Sha256", info.sha256) != info.sha256
+            ):
+                raise CLIError("INTEGRITY", "Arquivo baixado não passou pela verificação SHA-256")
 
         # Só substitui o destino depois da verificação integral.
         temporary: Path | None = None

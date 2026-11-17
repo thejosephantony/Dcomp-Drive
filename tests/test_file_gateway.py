@@ -609,3 +609,69 @@ def test_rf11_metrics_exposes_file_states_and_repair_counts(cluster):
     assert data["requests_total"] >= 1
     assert data["upload_bytes_total"] >= 2
     assert data["request_latency_avg_ms"] >= 0
+
+
+
+def test_rf6_returned_node_reuses_verified_replica(cluster, monkeypatch):
+    """RF6: re-registro + inventário restabelecem uma cópia LOST íntegra."""
+    import controller.main as api
+    from controller.file_models import Replica
+
+    client, fake, factory = cluster
+    body = b"retorno de storage node"
+    upload = client.put("/files/content", params={"path": "/retorno-rf6"}, content=body)
+    assert upload.status_code == 201
+    node_id = upload.json()["replicas"][0]["node_id"]
+    with factory() as session:
+        vid = session.query(FileVersion.version_id).one()[0]
+        replica = session.query(Replica).filter_by(version_id=vid, node_id=node_id).one()
+        replica.state = "LOST"
+        node = session.get(Node, node_id)
+        node.state = "DEAD"
+        session.commit()
+
+    registration = client.post("/nodes/register", json={
+        "node_id": node_id, "machine_id": node_id,
+        "address": f"http://{node_id}:9000",
+        "disks": [{"disk_id": f"{node_id}-disk0",
+                   "capacity_bytes": 1024 * 1024, "used_bytes": len(body)}],
+    })
+    assert registration.status_code == 200, registration.text
+    assert registration.json()["state"] == "HEALTHY"
+
+    def verify(url, *, timeout):
+        assert url.endswith(f"/objects/{vid}/verify")
+        assert urlsplit(url).hostname == node_id
+        assert fake.objects[(node_id, vid)] == body
+        return httpx.Response(200, request=httpx.Request("GET", url), json={
+            "object_id": vid, "match": True,
+            "expected_sha256": hashlib.sha256(body).hexdigest(),
+            "size_bytes": len(body),
+        })
+
+    monkeypatch.setattr(api.httpx, "get", verify)
+    result = client.post(f"/nodes/{node_id}/reconcile", json={
+        "disk_id": f"{node_id}-disk0",
+        "objects": [{
+            "object_id": vid, "sha256": hashlib.sha256(body).hexdigest(),
+            "size_bytes": len(body), "status": "HEALTHY",
+        }],
+    })
+    assert result.status_code == 200, result.text
+    assert result.json()["restored"] == 1
+    assert result.json()["discarded"] == 0
+    with factory() as session:
+        replica = session.query(Replica).filter_by(version_id=vid, node_id=node_id).one()
+        assert replica.state == "ACKED"
+    meta = client.get("/files/metadata", params={"path": "/retorno-rf6"})
+    assert meta.status_code == 200
+    assert meta.json()["status"] == "HEALTHY"
+
+
+def test_rf6_rejects_unregistered_disk(cluster):
+    client, _, _ = cluster
+    result = client.post("/nodes/storage-1/reconcile", json={
+        "disk_id": "outro-disco",
+        "objects": [],
+    })
+    assert result.status_code == 409

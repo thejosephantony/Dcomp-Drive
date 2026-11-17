@@ -83,6 +83,7 @@ class FileMetadataResponse(BaseModel):
     path: str
     version: int
     created_at: datetime | None = None
+    version_id: str | None = None  # ID físico para CLI de transferência direta
     sha256: str
     size_bytes: int
     replication_factor: int

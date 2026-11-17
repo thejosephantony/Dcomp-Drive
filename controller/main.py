@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import time
+import uuid
 
 import httpx
 from pathlib import Path
@@ -25,7 +26,7 @@ from controller.file_transfer import router as transfer_router
 from controller.models import Disk, Node
 from controller.monitor import monitor_forever, recalculate_status
 from controller.repair import repair_forever
-from controller.schemas import ClusterStatus, DiskStatus, Heartbeat, NodeRegistration, NodeStatus
+from controller.schemas import ClusterStatus, DiskStatus, Heartbeat, NodeInventory, NodeRegistration, NodeStatus
 
 from controller.logging_config import configure_logging
 
@@ -145,6 +146,117 @@ def drain_node(node_id: str, session: Session = Depends(get_session)) -> dict[st
     session.commit()
     logger.warning("node_drain_started node=%s", node_id)
     return {"node_id": node_id, "state": "DRAINING"}
+
+
+@app.post("/nodes/{node_id}/reconcile")
+def reconcile_node(
+    node_id: str,
+    payload: NodeInventory,
+    session: Session = Depends(get_session),
+) -> dict[str, int]:
+    """RF6: valida cópias no nó que retornou e reaproveita apenas dados íntegros."""
+    node = session.get(Node, node_id)
+    if node is None:
+        raise HTTPException(404, detail="nó não registrado")
+    if payload.disk_id not in {d.disk_id for d in node.disks}:
+        raise HTTPException(409, detail="disco não registrado para o nó")
+    base = _storage_url(node.address)
+    restored = discarded = skipped = 0
+    for physical in payload.objects:
+        object_id = physical.object_id
+        if re.fullmatch(r"[0-9a-f]{32}", object_id) is None:
+            skipped += 1
+            continue
+        version = session.get(FileVersion, object_id)
+        if version is None:
+            # Um órfão desconhecido não é excluído sem política de coleta segura.
+            skipped += 1
+            continue
+        entry = session.get(FileEntry, version.file_id)
+        current = (
+            version.status == "COMMITTED"
+            and entry is not None and entry.current_version_id == object_id
+        )
+        replica = session.scalar(
+            select(Replica)
+            .where(Replica.version_id == object_id, Replica.node_id == node_id)
+            .with_for_update()
+        )
+        if not current and version.status == "PENDING":
+            skipped += 1
+            continue
+
+        if current:
+            if node.state not in ("HEALTHY", "DRAINING"):
+                skipped += 1
+                continue
+            try:
+                check = httpx.get(f"{base}/objects/{object_id}/verify", timeout=5)
+                valid = check.status_code == 200 and (
+                    check.json().get("match") is True
+                    and check.json().get("expected_sha256") == version.sha256
+                    and check.json().get("size_bytes") == version.size_bytes
+                )
+            except (httpx.RequestError, ValueError):
+                skipped += 1
+                continue
+
+            if not valid:
+                if check.status_code == 500 and replica is not None:
+                    replica.state = "CORRUPTED"
+                    session.commit()
+                    logger.warning("reconcile_corruption_confirmed node=%s object=%s", node_id, object_id)
+                else:
+                    skipped += 1
+                continue
+
+            if replica is not None and replica.state == "ACKED":
+                skipped += 1
+                continue
+            all_acked = session.scalars(
+                select(Replica).where(
+                    Replica.version_id == object_id,
+                    Replica.state == "ACKED",
+                )
+            ).all()
+            live_nodes = {n.node_id: n for n in session.scalars(select(Node)).all()}
+            live = [
+                item for item in all_acked
+                if item.node_id in live_nodes
+                and live_nodes[item.node_id].state == "HEALTHY"
+            ]
+            if len(live) < version.replication_factor:
+                if replica is None:
+                    replica = Replica(
+                        replica_id=uuid.uuid4().hex,
+                        version_id=object_id,
+                        node_id=node_id,
+                        disk_id=payload.disk_id,
+                        state="ACKED",
+                    )
+                    session.add(replica)
+                else:
+                    replica.state = "ACKED"
+                replica.acked_at = datetime.now(timezone.utc)
+                session.commit()
+                restored += 1
+                logger.info("reconcile_replica_reused node=%s object=%s", node_id, object_id)
+                continue
+            # Já existem N cópias saudáveis em outras máquinas; a antiga é obsoleta.
+        try:
+            gone = httpx.delete(f"{base}/objects/{object_id}", timeout=5)
+        except httpx.RequestError:
+            skipped += 1
+            continue
+        if gone.status_code not in (200, 404):
+            skipped += 1
+            continue
+        if replica is not None:
+            session.delete(replica)
+            session.commit()
+        discarded += 1
+        logger.info("reconcile_obsolete_discarded node=%s object=%s", node_id, object_id)
+    return {"restored": restored, "discarded": discarded, "skipped": skipped}
 
 
 def _file_state_counts(session: Session) -> dict[str, int]:

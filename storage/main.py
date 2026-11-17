@@ -13,6 +13,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 import os
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
@@ -29,6 +30,7 @@ from storage.schemas import (
     StorageStatus,
     validate_sha256_digest,
 )
+from storage.crypto import EncryptionUnavailableError
 from storage.store import (
     CorruptedObjectError,
     HashMismatchError,
@@ -96,6 +98,7 @@ async def notify_controller_ack(write_id: str, sha256: str, size_bytes: int) -> 
 
 async def report_forever() -> None:
     registered = False
+    reconciled = False
     async with httpx.AsyncClient(timeout=3) as client:
         while True:
             try:
@@ -111,6 +114,7 @@ async def report_forever() -> None:
                     )
                     response.raise_for_status()
                     registered = True
+                    reconciled = False
                     logger.info("registered node=%s controller=%s", NODE_ID, CONTROLLER_URL)
                 else:
                     response = await client.post(
@@ -119,8 +123,34 @@ async def report_forever() -> None:
                     )
                     if response.status_code == 404:
                         registered = False
+                        reconciled = False
                     else:
                         response.raise_for_status()
+                if registered and not reconciled:
+                    inventory = {
+                        "disk_id": DISK_ID,
+                        "objects": [
+                            {
+                                "object_id": meta.object_id,
+                                "sha256": meta.sha256,
+                                "size_bytes": meta.size_bytes,
+                                "status": meta.status,
+                            }
+                            for meta in store.list_objects()
+                        ],
+                    }
+                    # Após um restart, reconciliar as cópias que sobraram
+                    # sem exigir edição manual do controlador.
+                    reconciled_response = await client.post(
+                        f"{CONTROLLER_URL}/nodes/{NODE_ID}/reconcile",
+                        json=inventory, timeout=30,
+                    )
+                    reconciled_response.raise_for_status()
+                    reconciled = True
+                    logger.info(
+                        "node_reconciled node=%s result=%s",
+                        NODE_ID, reconciled_response.json(),
+                    )
             except (httpx.HTTPError, OSError):
                 registered = False
                 logger.exception("heartbeat_or_registration_failed node=%s", NODE_ID)
@@ -205,6 +235,11 @@ async def handle_not_found(request: Request, exc: ObjectNotFoundError):
 @app.exception_handler(HashMismatchError)
 async def handle_hash_mismatch(request: Request, exc: HashMismatchError):
     return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+@app.exception_handler(EncryptionUnavailableError)
+async def handle_missing_key(request: Request, exc: EncryptionUnavailableError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 @app.exception_handler(CorruptedObjectError)
@@ -401,12 +436,19 @@ def _validate_peer_url(address: str) -> str:
             422, detail="Endereço inválido: use uma URL HTTP(S) de nó com porta explícita"
         ) from exc
 
-    configured = os.getenv(
-        "ALLOWED_STORAGE_PEERS",
-        ",".join(f"http://storage-{i}:9000" for i in range(1, 6)),
-    )
-    allowed = {item.strip().rstrip("/") for item in configured.split(",") if item.strip()}
-    if cleaned not in allowed:
+    configured = os.getenv("ALLOWED_STORAGE_PEERS", "").strip()
+    if configured:
+        allowed = {item.strip().rstrip("/") for item in configured.split(",") if item.strip()}
+        authorized = cleaned in allowed
+    else:
+        # RF6: aceita novos storages numerados na rede interna sem atualizar
+        # a allowlist central; rejeita serviços externos e outras portas.
+        authorized = (
+            parsed.scheme == "http"
+            and parsed.port == 9000
+            and re.fullmatch(r"storage-[1-9][0-9]*", parsed.hostname or "")
+        )
+    if not authorized:
         raise HTTPException(403, detail="Destino de replicação não autorizado")
 
     if _is_self_address(cleaned):

@@ -31,6 +31,7 @@ class ObjectMetadata(BaseModel):
     created_at: str
     last_scrubbed_at: str | None = None
     status: str = "HEALTHY"
+    encryption: str = "none"  # "none" (legado) ou "AES-256-GCM"
 
     @field_validator("sha256")
     @classmethod

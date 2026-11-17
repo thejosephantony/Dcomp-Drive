@@ -59,3 +59,16 @@ class ClusterStatus(BaseModel):
     counts: dict[str, int]
     files_by_state: dict[str, int] = Field(default_factory=dict)
     repairs_in_progress: int = 0
+
+
+
+class InventoryObject(BaseModel):
+    object_id: str = Field(min_length=1, max_length=256)
+    sha256: str
+    size_bytes: int = Field(ge=0)
+    status: str
+
+
+class NodeInventory(BaseModel):
+    disk_id: str = Field(min_length=1, max_length=128)
+    objects: list[InventoryObject] = Field(default_factory=list)
