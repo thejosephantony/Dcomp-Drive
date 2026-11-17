@@ -15,7 +15,7 @@ Este PR foi preparado para validação pela equipe. Os 52 testes da versão ante
 ## RF7 — Drain
 `POST /nodes/{id}/drain` marca `DRAINING`. Heartbeat e registro repetidos não desfazem a decisão. Novas gravações excluem o nó. O reparador pode utilizar as réplicas íntegras do nó drenando como fontes, copiá-las para outros nós e, **depois que N cópias saudáveis existirem**, descartar as antigas.
 
-**Limites:** se houver menos de N outros nós saudáveis, a drenagem fica incompleta; aguarde adicionar um nó. Não desligue o storage antes da restauração de todas as réplicas. O modelo ainda não oferece uma operação de cancelamento de drain.
+**Limites:** se houver menos de N outros nós saudáveis, a drenagem fica incompleta; aguarde adicionar um nó. Não desligue o storage antes da restauração de todas as réplicas. Após migrar as cópias, reabilite o nó via `POST /nodes/{id}/undrain`.
 
 Exemplo (execute **somente depois da suíte passar**, em dados de laboratório, com 4 outros Storage Nodes saudáveis e capacidade suficiente):
 

@@ -44,13 +44,13 @@ curl -fsS http://127.0.0.1:8000/status
 curl -fsS http://127.0.0.1:8000/metrics
 ~~~
 
-**Não execute \`docker compose down -v\`**: a opção \`-v\` apaga o PostgreSQL e os volumes dos objetos. \`docker compose stop\` ou \`docker compose down\` sem \`-v\` preservam os volumes.
+**Não execute `docker compose down -v`**: a opção `-v` apaga o PostgreSQL e os volumes dos objetos. `docker compose stop` ou `docker compose down` sem `-v` preservam os volumes.
 
-O controller publica a porta **apenas em 127.0.0.1:8000**, e os storages comunicam-se na rede Docker privada. Para a interface web remota, abra um túnel SSH até a EC2 e navegue para \`http://127.0.0.1:8000/\`. Não exponha essas APIs diretamente à internet; ainda não há autenticação de usuários.
+O controller publica a porta **apenas em 127.0.0.1:8000**, e os storages comunicam-se na rede Docker privada. Para a interface web remota, abra um túnel SSH até a EC2 e navegue para `http://127.0.0.1:8000/`. Não exponha essas APIs diretamente à internet; ainda não há autenticação de usuários.
 
 ## 3. Cliente direto (principal, exigência de separação de planos)
 
-O serviço \`client\` usa um *profile* opcional. Cada comando abaixo cria um contêiner temporário na rede Docker, com acesso a \`/work\` (pasta \`demo-files/\` do host). Ele usa \`DCOMP_BACKEND=http\` e \`DCOMP_DIRECT_STORAGE=true\` automaticamente.
+O serviço `client` usa um *profile* opcional. Cada comando abaixo cria um contêiner temporário na rede Docker, com acesso a `/work` (pasta `demo-files/` do host). Ele usa `DCOMP_BACKEND=http` e `DCOMP_DIRECT_STORAGE=true` automaticamente.
 
 ~~~bash
 printf 'Documento DComp Drive\n' > demo-files/origem.txt
@@ -70,7 +70,7 @@ docker compose run --rm client rmdir /documentos
 docker compose run --rm client status
 ~~~
 
-Se \`/documentos\` já existir, \`mkdir\` retorna erro de conflito; use outro nome para o ensaio.
+Se `/documentos` já existir, `mkdir` retorna erro de conflito; use outro nome para o ensaio.
 
 **Drain (RF7):** execute em um laboratório com ao menos N outros nós e capacidade livre:
 
@@ -78,41 +78,43 @@ Se \`/documentos\` já existir, \`mkdir\` retorna erro de conflito; use outro no
 docker compose run --rm client drain storage-1
 curl -fsS http://127.0.0.1:8000/status | python3 -m json.tool
 curl -fsS http://127.0.0.1:8000/metrics | python3 -m json.tool
+# Só depois da migração, opcionalmente devolver o nó à seleção de destinos:
+curl -fsS -X POST http://127.0.0.1:8000/nodes/storage-1/undrain
 ~~~
 
-Isso coloca \`storage-1\` em \`DRAINING\`; o reparador migra cópias com validação de hash, sem novas alocações nesse nó. Aguarde todas as réplicas voltarem a N antes de removê-lo. **Não faça drain em uma demonstração que dependa do mesmo conjunto de cinco nós sem assegurar capacidade sobrando.**
+Isso coloca `storage-1` em `DRAINING`; o reparador migra cópias com validação de hash, sem novas alocações nesse nó. Aguarde todas as réplicas voltarem a N antes de removê-lo. **Não faça drain em uma demonstração que dependa do mesmo conjunto de cinco nós sem assegurar capacidade sobrando.**
 
 ### CLI com túnel Windows
 
-O backend HTTP por padrão continua aceitando \`put/get\` via gateway em \`DCOMP_DIRECT_STORAGE=false\` para compatibilidade com computadores que não resolvem os nomes privados dos storages. Para demonstrar a arquitetura exigida, use a CLI no serviço Docker \`client\`, que **fala diretamente** com os Storage Nodes.
+O backend HTTP por padrão continua aceitando `put/get` via gateway em `DCOMP_DIRECT_STORAGE=false` para compatibilidade com computadores que não resolvem os nomes privados dos storages. Para demonstrar a arquitetura exigida, use a CLI no serviço Docker `client`, que **fala diretamente** com os Storage Nodes.
 
 ## 4. REST e observabilidade
 
 | Método e rota | Finalidade |
 | --- | --- |
-| \`POST /files/prepare\` | Reservar N destinos; retorna \`write_id\` |
-| \`POST /files/uploads/{id}/ack\` | ACK do nó após gravação |
-| \`POST /files/uploads/{id}/commit\` | Publicar versão após W = N ACKs |
-| \`GET /files/metadata?path=/...\` | Hash, tamanho, data, versão, nós, discos e estado |
-| \`GET /files/entries?path=/\` | Listar diretórios/arquivos |
-| \`POST /files/directories\` | Criar diretório (\`{"path":"/x"}\`) |
-| \`DELETE /files/directories?path=/x\` | Remover diretório vazio |
-| \`POST /files/move\` | Renomear arquivo (\`{"src":"/x","dst":"/y"}\`) |
-| \`DELETE /files/entry?path=/x\` | Excluir arquivo |
-| \`POST /nodes/{id}/drain\` | Migrar cópias antes de retirar nó |
-| \`POST /nodes/{id}/reconcile\` | Reconciliar inventário de nó retornando |
-| \`GET /status\` | Nós/discos, arquivos por estado, reparos ativos |
-| \`GET /metrics\` | Requisições, latência média, bytes e estados de réplicas |
-| \`PUT /files/content\`, \`GET /files/content\` | Gateway legado da interface web |
-| \`POST http://storage-N:9000/scrub\` | Verificação física explícita |
+| `POST /files/prepare` | Reservar N destinos; retorna `write_id` |
+| `POST /files/uploads/{id}/ack` | ACK do nó após gravação |
+| `POST /files/uploads/{id}/commit` | Publicar versão após W = N ACKs |
+| `GET /files/metadata?path=/...` | Hash, tamanho, data, versão, nós, discos e estado |
+| `GET /files/entries?path=/` | Listar diretórios/arquivos |
+| `POST /files/directories` | Criar diretório (`{"path":"/x"}`) |
+| `DELETE /files/directories?path=/x` | Remover diretório vazio |
+| `POST /files/move` | Renomear arquivo (`{"src":"/x","dst":"/y"}`) |
+| `DELETE /files/entry?path=/x` | Excluir arquivo |
+| `POST /nodes/{id}/drain` | Migrar cópias antes de retirar nó |
+| `POST /nodes/{id}/reconcile` | Reconciliar inventário de nó retornando |
+| `GET /status` | Nós/discos, arquivos por estado, reparos ativos |
+| `GET /metrics` | Requisições, latência média, bytes e estados de réplicas |
+| `PUT /files/content`, `GET /files/content` | Gateway legado da interface web |
+| `POST http://storage-N:9000/scrub` | Verificação física explícita |
 
-Os Storages são serviços privados. O scrubbing periódico é controlado por \`SCRUB_INTERVAL_SECONDS\` (padrão 15 s). Logs são emitidos em JSON por \`LOG_FORMAT=json\` (timestamp UTC, componente, evento, identificadores).
+Os Storages são serviços privados. O scrubbing periódico é controlado por `SCRUB_INTERVAL_SECONDS` (padrão 15 s). Logs são emitidos em JSON por `LOG_FORMAT=json` (timestamp UTC, componente, evento, identificadores).
 
 ## 5. Configurações e criptografia (RF9)
 
-O arquivo \`.env.example\` documenta opções. Valores operacionais principais: \`REPLICATION_FACTOR=3\`, \`NODE_TIMEOUT_SECONDS=6\`, \`MAX_DISK_USAGE_PERCENT=90\`, \`MAX_CONCURRENT_RECOVERIES=1\`, \`REPAIR_BANDWIDTH_BYTES_PER_SEC=0\` (sem limite por reparo) e \`SCRUB_INTERVAL_SECONDS=15\`.
+O arquivo `.env.example` documenta opções. Valores operacionais principais: `REPLICATION_FACTOR=3`, `NODE_TIMEOUT_SECONDS=6`, `MAX_DISK_USAGE_PERCENT=90`, `MAX_CONCURRENT_RECOVERIES=1`, `REPAIR_BANDWIDTH_BYTES_PER_SEC=0` (sem limite por reparo) e `SCRUB_INTERVAL_SECONDS=15`.
 
-Por padrão, **dados não cifrados**: \`ENCRYPTION_ENABLED=false\`. Para habilitar AES-256-GCM real, gere **localmente** uma chave de 32 bytes e guarde somente no \`.env\` privado (nunca em Git):
+Por padrão, **dados não cifrados**: `ENCRYPTION_ENABLED=false`. Para habilitar AES-256-GCM real, gere **localmente** uma chave de 32 bytes e guarde somente no `.env` privado (nunca em Git):
 
 ~~~bash
 python3 -c 'import os,base64;print(base64.b64encode(os.urandom(32)).decode())'
@@ -126,13 +128,13 @@ A cifra ocorre **nos Storage Nodes** antes da persistência; arquivos cifrados t
 
 ## 6. Concorrência, consistência e falhas
 
-- Semântica de escrita: versões imutáveis com estado \`PENDING\` e publicação do ponteiro atual somente após \`COMMITTED\`; **W = N**.
+- Semântica de escrita: versões imutáveis com estado `PENDING` e publicação do ponteiro atual somente após `COMMITTED`; **W = N**.
 - Leituras usam versão publicada e verificam SHA-256; falhas físicas disparam tentativa de outra réplica.
 - PostgreSQL mantém diretórios, versões, réplicas, capacidades e inventário após reinicializações.
-- Heartbeats marcam nós \`SUSPECT\` e \`DEAD\`; reparos priorizam arquivos com menos réplicas vivas, respeitam destinos distintos, capacidade e limite configurável.
-- Um nó que retorna registra inventário e o controlador verifica hashes antes de reaproveitar réplicas \`LOST\`; versões obsoletas conhecidas são descartadas.
+- Heartbeats marcam nós `SUSPECT` e `DEAD`; reparos priorizam arquivos com menos réplicas vivas, respeitam destinos distintos, capacidade e limite configurável.
+- Um nó que retorna registra inventário e o controlador verifica hashes antes de reaproveitar réplicas `LOST`; versões obsoletas conhecidas são descartadas.
 - A consistência é forte para a **publicação de metadados** de uma versão; a cópia física distribuída não participa da transação do PostgreSQL, portanto falhas e concorrência podem criar órfãos ou limpeza pendente. Em termos de CAP, durante partições que impossibilitam W=N prioriza-se consistência de escrita sobre disponibilidade.
-- \`mv\` de diretórios não é suportado; \`rm\` faz limpeza física em melhor esforço e não oferece fila persistente de coleta.
+- `mv` de diretórios não é suportado; `rm` faz limpeza física em melhor esforço e não oferece fila persistente de coleta.
 - O caminho direto ainda carrega o arquivo em memória no cliente; não há chunking por objeto nem suporte testado a volumes muito grandes. O limite do gateway web é 32 MiB; a CLI direta não usa esse gateway.
 - Limite de vazão de reparos aplica-se **por transferência**, não à taxa agregada entre vários reparos concorrentes.
 - Sem autenticação/autorizações por usuário, TLS interno, controladores redundantes ou domínios de falha físicos.
@@ -144,9 +146,9 @@ docker compose exec -T controller python -m pytest -q tests
 docker compose logs --tail=120 controller storage-1
 ~~~
 
-Evidências anteriores de RF1/RF4 na AWS encontram-se em \`docs/evidencias/parte1/\`. Os documentos \`docs/rf1-namespace.md\` e \`docs/rf4-corruption-demo.md\` descrevem a injeção segura de uma única falha em um arquivo descartável e a verificação de hashes.
+Evidências anteriores de RF1/RF4 na AWS encontram-se em `docs/evidencias/parte1/`. Os documentos `docs/rf1-namespace.md` e `docs/rf4-corruption-demo.md` descrevem a injeção segura de uma única falha em um arquivo descartável e a verificação de hashes.
 
-**Roteiro para apresentação de até 5 minutos:** (1) mostrar N=3 após \`put\`, (2) download e hash, (3) desligar temporariamente um storage e observar \`UNDER_REPLICATED → RECOVERING → HEALTHY\`, (4) injetar corrupção em uma réplica de arquivo **descartável** e mostrar detecção e nova cópia. Nunca corromper dados de colegas ou desativar o PostgreSQL.
+**Roteiro para apresentação de até 5 minutos:** (1) mostrar N=3 após `put`, (2) download e hash, (3) desligar temporariamente um storage e observar `UNDER_REPLICATED → RECOVERING → HEALTHY`, (4) injetar corrupção em uma réplica de arquivo **descartável** e mostrar detecção e nova cópia. Nunca corromper dados de colegas ou desativar o PostgreSQL.
 
 ## 8. Colaboração e histórico
 

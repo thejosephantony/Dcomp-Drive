@@ -571,6 +571,9 @@ def test_drain_migrates_replicas_without_data_loss(cluster, monkeypatch):
     assert client.get("/files/content", params={"path": "/drain-rf7.bin"}).content == payload
     with factory() as session:
         assert session.query(Replica).filter_by(version_id=version_id).count() == 3
+    resumed = client.post(f"/nodes/{first}/undrain")
+    assert resumed.status_code == 200
+    assert resumed.json()["state"] == "HEALTHY"
 
 
 def test_rf5_repair_prioritizes_fewest_live_replicas(cluster):

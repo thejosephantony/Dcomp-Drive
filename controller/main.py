@@ -148,6 +148,20 @@ def drain_node(node_id: str, session: Session = Depends(get_session)) -> dict[st
     return {"node_id": node_id, "state": "DRAINING"}
 
 
+@app.post("/nodes/{node_id}/undrain")
+def undrain_node(node_id: str, session: Session = Depends(get_session)) -> dict[str, str]:
+    """Reabilita nó que concluiu o ensaio de drenagem planejada."""
+    node = session.get(Node, node_id)
+    if node is None:
+        raise HTTPException(404, detail="nó não registrado")
+    if node.state != "DRAINING":
+        raise HTTPException(409, detail="nó não está em DRAINING")
+    node.state = "HEALTHY"
+    session.commit()
+    logger.info("node_undrained node=%s", node_id)
+    return {"node_id": node_id, "state": "HEALTHY"}
+
+
 @app.post("/nodes/{node_id}/reconcile")
 def reconcile_node(
     node_id: str,
