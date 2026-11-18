@@ -12,11 +12,13 @@ Responsabilidades:
 import asyncio
 from contextlib import asynccontextmanager
 import logging
+import hmac
 import os
 import re
+import time
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import FastAPI, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 import httpx
 
@@ -101,6 +103,22 @@ async def report_forever() -> None:
     reconciled = False
     async with httpx.AsyncClient(timeout=3) as client:
         while True:
+            # RF6: o sexto storage está pronto, mas só se registra quando
+            # o visitante ativa o nó. A ativação sobrevive ao reinício.
+            if os.getenv("DEMO_STANDBY", "false").lower() == "true" and not (
+                DATA_DIR / ".demo_activated"
+            ).exists():
+                await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+                continue
+            if DEMO_PAUSED and DEMO_OFFLINE_AT is not None:
+                maximum = float(os.getenv("DEMO_AUTO_RESTORE_SECONDS", "60"))
+                if maximum > 0 and time.monotonic() - DEMO_OFFLINE_AT >= maximum:
+                    restore_demo_node_automatically()
+            if DEMO_PAUSED:
+                registered = False
+                reconciled = False
+                await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+                continue
             try:
                 if not registered:
                     response = await client.post(
@@ -197,6 +215,8 @@ async def scrub_forever() -> None:
     while True:
         try:
             await asyncio.sleep(SCRUB_INTERVAL_SECONDS)
+            if DEMO_PAUSED:
+                continue
             logger.info("scrub_periodic_trigger node=%s", NODE_ID)
             report = await store.scrub()
             await notify_corrupted_replicas(report)
@@ -225,6 +245,105 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=f"DComp Storage {NODE_ID}", version="0.2.0", lifespan=lifespan)
+
+# Falha lógica: bloqueia tráfego do nó e suspende heartbeats. Nunca para Docker.
+# Somente em ambiente de laboratório isolado, desativado por padrão.
+DEMO_PAUSED = False
+DEMO_OFFLINE_AT: float | None = None
+
+
+def restore_demo_node_automatically() -> None:
+    global DEMO_PAUSED, DEMO_OFFLINE_AT
+    if not DEMO_PAUSED:
+        return
+    DEMO_PAUSED = False
+    DEMO_OFFLINE_AT = None
+    logger.warning("demo_node_automatically_restored node=%s", NODE_ID)
+
+
+def _require_demo_admin(x_demo_token: str | None = Header(default=None)) -> None:
+    if os.getenv("DEMO_MODE", "false").lower() != "true":
+        raise HTTPException(404, "Modo de demonstração desativado")
+    secret = os.getenv("DEMO_ADMIN_TOKEN", "")
+    if len(secret) < 32:
+        raise HTTPException(503, "Token de demonstração não configurado")
+    if x_demo_token is None or not hmac.compare_digest(x_demo_token, secret):
+        raise HTTPException(403, "Token administrativo inválido")
+
+
+@app.middleware("http")
+async def demo_node_outage(request: Request, call_next):
+    if DEMO_PAUSED and not request.url.path.startswith("/_demo/"):
+        return JSONResponse(status_code=503, content={"detail": "Storage temporariamente indisponível (demonstração)"})
+    return await call_next(request)
+
+
+@app.post("/_demo/offline")
+def demo_offline(_: None = Depends(_require_demo_admin)) -> dict:
+    global DEMO_PAUSED, DEMO_OFFLINE_AT
+    DEMO_PAUSED = True
+    DEMO_OFFLINE_AT = time.monotonic()
+    logger.warning("demo_node_failure_injected node=%s", NODE_ID)
+    return {"node_id": NODE_ID, "paused": True}
+
+
+@app.post("/_demo/restore")
+def demo_restore(_: None = Depends(_require_demo_admin)) -> dict:
+    global DEMO_PAUSED, DEMO_OFFLINE_AT
+    DEMO_PAUSED = False
+    DEMO_OFFLINE_AT = None
+    logger.info("demo_node_restored node=%s", NODE_ID)
+    return {"node_id": NODE_ID, "paused": False}
+
+
+@app.post("/_demo/activate")
+def demo_activate(_: None = Depends(_require_demo_admin)) -> dict:
+    """RF6: habilita registro/heartbeat sem reiniciar o controlador."""
+    if os.getenv("DEMO_STANDBY", "false").lower() != "true":
+        raise HTTPException(409, "O nó não está configurado como standby")
+    (DATA_DIR / ".demo_activated").touch(mode=0o600, exist_ok=True)
+    logger.warning("demo_storage_activated node=%s", NODE_ID)
+    return {"node_id": NODE_ID, "activated": True}
+
+
+@app.post("/_demo/encryption/{object_id}")
+def demo_encryption_evidence(
+    object_id: str,
+    _: None = Depends(_require_demo_admin),
+) -> dict:
+    """RF9: comprova formato cifrado no disco sem expor bytes ou chaves."""
+    import hashlib
+    from storage.crypto import MAGIC
+
+    meta = store.get_metadata(object_id)
+    path = store.objects_dir / object_id
+    if not path.is_file():
+        raise HTTPException(404, "Objeto físico não localizado")
+    with path.open("rb") as file:
+        prefix = file.read(len(MAGIC))
+    # Hash do arquivo armazenado difere do hash do plaintext quando há cifra.
+    physical_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return {
+        "object_id": object_id,
+        "node_id": store.node_id,
+        "encryption": meta.encryption,
+        "encrypted_on_disk": prefix == MAGIC and meta.encryption == "AES-256-GCM",
+        "disk_sha256": physical_digest,
+        "plaintext_sha256": meta.sha256,
+        "physical_size_bytes": path.stat().st_size,
+        "plaintext_size_bytes": meta.size_bytes,
+    }
+
+
+@app.post("/_demo/corrupt/{object_id}")
+async def demo_corrupt(object_id: str, _: None = Depends(_require_demo_admin)) -> dict:
+    if DEMO_PAUSED:
+        raise HTTPException(409, "Restaure o nó antes de corromper objeto")
+    store.corrupt_for_testing(object_id)
+    report = await store.scrub(specific_object_id=object_id)
+    await notify_corrupted_replicas(report)
+    return {"object_id": object_id, "corrupted_ids": report.corrupted_ids}
+
 
 
 @app.exception_handler(ObjectNotFoundError)

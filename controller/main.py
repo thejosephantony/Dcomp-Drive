@@ -23,6 +23,7 @@ from controller.file_transfer import _storage_url
 from controller.file_api import router as files_router, metadata
 from controller.namespace_api import router as namespace_router
 from controller.file_transfer import router as transfer_router
+from controller.demo_api import router as demo_router
 from controller.models import Disk, Node
 from controller.monitor import monitor_forever, recalculate_status
 from controller.repair import repair_forever
@@ -54,6 +55,7 @@ app = FastAPI(title="DComp Drive Controller", version="0.2.0", lifespan=lifespan
 app.include_router(files_router)
 app.include_router(transfer_router)
 app.include_router(namespace_router)
+app.include_router(demo_router)
 
 _METRIC_START = time.monotonic()
 _REQUEST_COUNTER = {"count": 0, "latency_sum_ms": 0.0}

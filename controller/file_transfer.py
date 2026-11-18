@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 import httpx
 from controller.telemetry import record_transfer
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from controller.database import get_session
@@ -89,6 +89,7 @@ def _timeout() -> httpx.Timeout:
 async def upload_content(
     request: Request,
     path: str = Query(...),
+    replication_factor: int | None = Query(default=None, ge=1, le=32),
     session: Session = Depends(get_session),
 ) -> FileMetadataResponse:
     """Reserva N réplicas, grava bytes, verifica cada nó e publica a versão."""
@@ -100,10 +101,25 @@ async def upload_content(
             raise HTTPException(413, f"Arquivo ultrapassa o limite de {maximum} bytes")
         buffer.extend(chunk)
 
+    if os.getenv("PUBLIC_DEMO_MODE", "false").lower() == "true":
+        if os.getenv("PUBLIC_DEMO_ISOLATED", "false").lower() != "true":
+            raise HTTPException(503, "Modo público exige laboratório isolado")
+        max_files = int(os.getenv("PUBLIC_DEMO_MAX_FILES", "100"))
+        existing = session.scalar(
+            select(FileEntry.file_id).where(
+                FileEntry.path == path,
+                FileEntry.current_version_id.is_not(None),
+            )
+        )
+        count = session.scalar(
+            select(func.count(FileEntry.file_id)).where(FileEntry.current_version_id.is_not(None))
+        ) or 0
+        if existing is None and count >= max_files:
+            raise HTTPException(507, "Laboratório atingiu o limite de arquivos publicados")
     data = bytes(buffer)
     sha256 = hashlib.sha256(data).hexdigest()
     operation = prepare(
-        PrepareRequest(path=path, size_bytes=len(data), sha256=sha256),
+        PrepareRequest(path=path, size_bytes=len(data), sha256=sha256, replication_factor=replication_factor),
         session,
     )
     stored_at: list[str] = []

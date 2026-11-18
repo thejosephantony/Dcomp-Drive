@@ -30,6 +30,21 @@ def test_web_dashboard_and_assets_are_served() -> None:
     script = client.get("/ui/app.js")
     assert script.status_code == 200
     assert "/files/catalog" in script.text
+    assert 'id="upload-replicas"' in home.text
+    assert 'id="namespace-path"' in home.text
+    assert 'id="namespace-new-name"' in home.text
+    assert 'id="namespace-up"' in home.text
+    assert 'id="namespace-create"' in home.text
+    assert 'id="namespace-remove"' in home.text
+    assert "Renomear" in script.text
+    assert "Mover" in script.text
+    assert "Excluir" in script.text
+    assert 'id="cluster-metrics"' in home.text
+    assert 'id="requirements"' in home.text
+    assert "/files/entries" in script.text
+    assert "/files/directories" in script.text
+    assert "/files/move" in script.text
+    assert "replication_factor=" in script.text
 
 
 def test_catalog_endpoint_returns_empty_list_when_no_files(tmp_path) -> None:
@@ -54,3 +69,93 @@ def test_catalog_endpoint_returns_empty_list_when_no_files(tmp_path) -> None:
         assert response.json() == []
     finally:
         engine.dispose()
+
+
+
+def test_demo_controls_fail_closed_by_default(monkeypatch) -> None:
+    monkeypatch.setenv("DEMO_MODE", "false")
+    monkeypatch.delenv("DEMO_ADMIN_TOKEN", raising=False)
+    client = TestClient(app)
+    assert client.get("/demo/config").json() == {"enabled": False, "public": False, "max_upload_bytes": 33554432}
+    assert client.post("/demo/nodes/storage-1/offline").status_code == 404
+    assert client.post("/demo/files/corrupt", json={"path": "/demo-test.txt"}).status_code == 404
+
+
+def test_demo_requires_valid_token_and_restricts_corruption(monkeypatch) -> None:
+    monkeypatch.setenv("DEMO_MODE", "true")
+    monkeypatch.setenv("DEMO_ADMIN_TOKEN", "a" * 40)
+    client = TestClient(app)
+    assert client.get("/demo/config").json() == {"enabled": True, "public": False, "max_upload_bytes": 33554432}
+    assert client.post("/demo/nodes/storage-1/offline").status_code == 403
+    headers = {"X-Demo-Token": "a" * 40}
+    assert client.post(
+        "/demo/files/corrupt",
+        json={"path": "/documento-importante.pdf"},
+        headers=headers,
+    ).status_code == 422
+
+
+def test_storage_failure_simulation_is_authenticated_and_reversible(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from storage.main import app as storage_app
+
+    monkeypatch.setenv("DEMO_MODE", "true")
+    monkeypatch.setenv("DEMO_ADMIN_TOKEN", "b" * 40)
+    client = TestClient(storage_app)
+    headers = {"X-Demo-Token": "b" * 40}
+    assert client.post("/_demo/offline").status_code == 403
+    try:
+        paused = client.post("/_demo/offline", headers=headers)
+        assert paused.status_code == 200
+        assert paused.json()["paused"] is True
+        assert client.get("/health").status_code == 503
+    finally:
+        restored = client.post("/_demo/restore", headers=headers)
+        assert restored.status_code == 200
+    assert client.get("/health").status_code == 200
+
+
+
+def test_public_demo_requires_explicit_isolation(monkeypatch):
+    import pytest
+    from fastapi import HTTPException
+    from controller.demo_api import demo_config, require_public_demo
+
+    monkeypatch.setenv("DEMO_MODE", "true")
+    monkeypatch.setenv("DEMO_ADMIN_TOKEN", "A" * 48)
+    monkeypatch.setenv("PUBLIC_DEMO_MODE", "true")
+    monkeypatch.delenv("PUBLIC_DEMO_ISOLATED", raising=False)
+
+    assert demo_config()["public"] is False
+    with pytest.raises(HTTPException) as error:
+        require_public_demo()
+    assert error.value.status_code == 404
+
+    monkeypatch.setenv("PUBLIC_DEMO_ISOLATED", "true")
+    assert demo_config()["enabled"] is True and demo_config()["public"] is True
+    require_public_demo()
+
+
+def test_public_disabled_by_default_does_not_require_secret(monkeypatch):
+    from controller.demo_api import demo_config
+
+    monkeypatch.delenv("PUBLIC_DEMO_MODE", raising=False)
+    monkeypatch.delenv("DEMO_MODE", raising=False)
+    monkeypatch.delenv("DEMO_ADMIN_TOKEN", raising=False)
+    assert demo_config()["public"] is False
+    assert demo_config()["enabled"] is False
+
+
+def test_rf12_event_log_drops_unrelated_messages_and_raw_content():
+    import logging
+    from controller.logging_config import DemoEventHandler, public_events_snapshot
+
+    handler = DemoEventHandler()
+    handler.emit(logging.LogRecord(
+        "controller.repair", logging.WARNING, "test.py", 12,
+        "repair_completed node=storage-3 version=abc123 token=SECRET_UNSAFE",
+        (), None,
+    ))
+    recent = public_events_snapshot(10)
+    assert any(item["event"] == "repair_completed" for item in recent)
+    assert "SECRET_UNSAFE" not in repr(recent)

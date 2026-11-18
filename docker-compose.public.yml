@@ -1,0 +1,164 @@
+# DComp-Drive: laboratório público DESCARTÁVEL. 
+# Use SEMPRE: docker compose -p dcomp-public -f docker-compose.public.yml --env-file .env.public
+# Nunca compartilhe volumes ou redes do projeto dcomp-drive principal.
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: dcomp_drive
+      POSTGRES_USER: dcomp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?configure .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dcomp -d dcomp_drive"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+
+  controller:
+    build: .
+    restart: unless-stopped
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn controller.main:app --host 0.0.0.0 --port 8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://dcomp:${POSTGRES_PASSWORD:?configure .env}@postgres:5432/dcomp_drive
+      NODE_TIMEOUT_SECONDS: ${NODE_TIMEOUT_SECONDS:-6}
+      MONITOR_INTERVAL_SECONDS: "2"
+      REPLICATION_FACTOR: ${REPLICATION_FACTOR:-3}
+      WRITE_TIMEOUT_SECONDS: ${WRITE_TIMEOUT_SECONDS:-300}
+      MAX_TRANSFER_BYTES: ${PUBLIC_MAX_TRANSFER_BYTES:-1048576}
+      ENCRYPTION_ENABLED: "${ENCRYPTION_ENABLED:-true}"
+      PUBLIC_DEMO_MODE: "true"
+      PUBLIC_DEMO_ISOLATED: "true"
+      PUBLIC_DEMO_RESTART_ALLOWED: "true"
+      PUBLIC_DEMO_MAX_FILES: ${PUBLIC_DEMO_MAX_FILES:-100}
+      PUBLIC_DEMO_MAX_DIRECTORIES: ${PUBLIC_DEMO_MAX_DIRECTORIES:-100}
+      REPAIR_INTERVAL_SECONDS: ${REPAIR_INTERVAL_SECONDS:-2}
+      REPAIR_CLAIM_SECONDS: ${REPAIR_CLAIM_SECONDS:-180}
+      MAX_CONCURRENT_RECOVERIES: "${MAX_CONCURRENT_RECOVERIES:-1}"
+      REPAIR_BANDWIDTH_BYTES_PER_SEC: "${REPAIR_BANDWIDTH_BYTES_PER_SEC:-0}"
+      MAX_DISK_USAGE_PERCENT: ${MAX_DISK_USAGE_PERCENT:-90}
+      DEMO_MODE: "true"
+      DEMO_ADMIN_TOKEN: ${DEMO_ADMIN_TOKEN:?configure a strong private internal token}
+    ports:
+      - "127.0.0.1:18001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Ponto de entrada público na PRÓPRIA EC2, sem Nginx e sem ngrok.
+  # TLS encerrado no Uvicorn; somente rotas explicitamente permitidas
+  # alcançam o controller público isolado pela rede Docker privada.
+  gateway:
+    build: .
+    restart: unless-stopped
+    command: >
+      uvicorn controller.public_gateway:app --host 0.0.0.0 --port 8443
+      --ssl-keyfile /etc/letsencrypt/live/34.193.62.218/privkey.pem
+      --ssl-certfile /etc/letsencrypt/live/34.193.62.218/fullchain.pem
+    environment:
+      PUBLIC_GATEWAY_MAX_BODY: "1048576"
+      PUBLIC_GATEWAY_REQUESTS_PER_MINUTE: "240"
+    ports:
+      - "443:8443"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - controller
+
+  # CLI isolada na mesma rede Docker: cliente -> Storage Nodes diretamente.
+  # Não participa do 'docker compose up' por usar um profile opcional.
+  client:
+    profiles: ["cli"]
+    build: .
+    entrypoint: ["python", "-m", "client.cli"]
+    environment:
+      DCOMP_BACKEND: http
+      DCOMP_CONTROLLER_URL: http://controller:8000
+      DCOMP_DIRECT_STORAGE: "true"
+    volumes:
+      - ./demo-files:/work
+    depends_on:
+      - controller
+
+  storage-1: &storage
+    build: .
+    restart: unless-stopped
+    command: uvicorn storage.main:app --host 0.0.0.0 --port 9000
+    environment: &storage_env
+      NODE_ID: storage-1
+      MACHINE_ID: storage-1
+      STORAGE_ADDRESS: http://storage-1:9000
+      CONTROLLER_URL: http://controller:8000
+      HEARTBEAT_INTERVAL_SECONDS: "2"
+      SCRUB_INTERVAL_SECONDS: "${SCRUB_INTERVAL_SECONDS:-15}"
+      DEMO_AUTO_RESTORE_SECONDS: "60"
+      STORAGE_CAPACITY_BYTES: "${PUBLIC_STORAGE_CAPACITY_BYTES:-33554432}"
+      ENCRYPTION_ENABLED: "${ENCRYPTION_ENABLED:-false}"
+      ENCRYPTION_KEY_BASE64: "${ENCRYPTION_KEY_BASE64:-}"
+      DATA_DIR: /data
+      DEMO_MODE: "true"
+      DEMO_ADMIN_TOKEN: ${DEMO_ADMIN_TOKEN:?configure a strong private internal token}
+    volumes: [storage1_data:/data]
+    depends_on:
+      - controller
+
+  storage-2:
+    <<: *storage
+    environment:
+      <<: *storage_env
+      NODE_ID: storage-2
+      MACHINE_ID: storage-2
+      STORAGE_ADDRESS: http://storage-2:9000
+    volumes: [storage2_data:/data]
+
+  storage-3:
+    <<: *storage
+    environment:
+      <<: *storage_env
+      NODE_ID: storage-3
+      MACHINE_ID: storage-3
+      STORAGE_ADDRESS: http://storage-3:9000
+    volumes: [storage3_data:/data]
+
+  storage-4:
+    <<: *storage
+    environment:
+      <<: *storage_env
+      NODE_ID: storage-4
+      MACHINE_ID: storage-4
+      STORAGE_ADDRESS: http://storage-4:9000
+    volumes: [storage4_data:/data]
+
+  storage-5:
+    <<: *storage
+    environment:
+      <<: *storage_env
+      NODE_ID: storage-5
+      MACHINE_ID: storage-5
+      STORAGE_ADDRESS: http://storage-5:9000
+    volumes: [storage5_data:/data]
+
+  # Sexto nó de expansão RF6. Inicia em standby e entra no cluster
+  # após a ação pública de ativação, sem reiniciar o controlador.
+  storage-6:
+    <<: *storage
+    environment:
+      <<: *storage_env
+      NODE_ID: storage-6
+      MACHINE_ID: storage-6
+      STORAGE_ADDRESS: http://storage-6:9000
+      DEMO_STANDBY: "true"
+    volumes: [storage6_data:/data]
+
+volumes:
+  postgres_data:
+  storage1_data:
+  storage2_data:
+  storage3_data:
+  storage4_data:
+  storage5_data:
+  storage6_data:

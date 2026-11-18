@@ -6,3 +6,7 @@ __pycache__
 .env
 .dcomp_mock
 .pytest_cache
+
+# Chaves AES/Postgres/token do laboratório público
+.env.public
+.env.public.*
