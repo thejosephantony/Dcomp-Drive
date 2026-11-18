@@ -19,3 +19,14 @@
 .metrics-detail{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:20px 0}
 @media(max-width:900px){.metrics-detail{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:560px){.metrics-detail{grid-template-columns:1fr}}
+
+/* RF1 — explorador de arquivos e operações completas. */
+.namespace-path-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:8px 0 16px}
+.namespace-path-actions .demo-input{flex:1 1 240px;min-width:160px}
+.file-actions{display:flex;flex-wrap:wrap;gap:7px;min-width:290px;align-items:center}
+.file-actions .button{white-space:nowrap}
+@media(max-width:680px){
+ .namespace-path-actions{align-items:stretch}
+ .namespace-path-actions .demo-input{flex-basis:100%}
+ .file-actions{min-width:250px}
+}
