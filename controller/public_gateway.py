@@ -57,7 +57,13 @@ _hits_lock = asyncio.Lock()
 def _allowed(method: str, path: str) -> bool:
     if path in _METHODS:
         return method in _METHODS[path]
-    if method == "GET" and _STATIC.fullmatch(path):
+    if (
+        method == "GET"
+        and _STATIC.fullmatch(path)
+        # Reject dot segments even if they pass the character whitelist.
+        # Otherwise /ui/../../etc/passwd could traverse the asset root.
+        and all(segment not in (".", "..") for segment in path.split("/"))
+    ):
         return True
     if method == "POST" and _NODE_ACTION.fullmatch(path):
         return True
