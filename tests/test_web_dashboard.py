@@ -80,7 +80,8 @@ def test_demo_requires_valid_token_and_restricts_corruption(monkeypatch) -> None
     ).status_code == 422
 
 
-def test_storage_failure_simulation_is_authenticated_and_reversible(monkeypatch) -> None:
+def test_storage_failure_simulation_is_authenticated_and_reversible(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
     from storage.main import app as storage_app
 
     monkeypatch.setenv("DEMO_MODE", "true")
