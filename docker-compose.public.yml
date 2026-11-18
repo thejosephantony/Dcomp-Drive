@@ -49,6 +49,26 @@ services:
       postgres:
         condition: service_healthy
 
+  # Ponto de entrada público na PRÓPRIA EC2, sem Nginx e sem ngrok.
+  # TLS encerrado no Uvicorn; somente rotas explicitamente permitidas
+  # alcançam o controller público isolado pela rede Docker privada.
+  gateway:
+    build: .
+    restart: unless-stopped
+    command: >
+      uvicorn controller.public_gateway:app --host 0.0.0.0 --port 8443
+      --ssl-keyfile /etc/letsencrypt/live/34.193.62.218/privkey.pem
+      --ssl-certfile /etc/letsencrypt/live/34.193.62.218/fullchain.pem
+    environment:
+      PUBLIC_GATEWAY_MAX_BODY: "1048576"
+      PUBLIC_GATEWAY_REQUESTS_PER_MINUTE: "240"
+    ports:
+      - "443:8443"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - controller
+
   # CLI isolada na mesma rede Docker: cliente -> Storage Nodes diretamente.
   # Não participa do 'docker compose up' por usar um profile opcional.
   client:
