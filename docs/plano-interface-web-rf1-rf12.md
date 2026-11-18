@@ -59,3 +59,20 @@
 - Todas as ações públicas afetando somente dados e recursos de teste; dados existentes preservados.
 - Cluster funcional após falha, corrupção, drain e reinicialização de teste.
 - Sem rota pública que altere os storages privados, PostgreSQL principal, Docker socket ou chaves de criptografia.
+
+## Uso do gerenciador RF1 (nova interface, aguardando testes)
+
+1. **PUT**: escolher arquivo e destino absoluto na seção Arquivos, escolher N, enviar.
+2. **GET**: usar botão Baixar da tabela; SHA-256 deve ser verificado após download em HTTPS ou localhost.
+3. **Renomear**: botão Renomear, informar apenas o nome novo; mesmo diretório. Internamente usa `POST /files/move`.
+4. **Mover**: botão Mover, informar caminho absoluto completo de destino, com pasta de destino previamente criada; mantém hash e versão física.
+5. **Remover arquivo**: botão Excluir e confirmação; saída indica se limpeza física ficou pendente.
+6. **Listar diretório**: aba Diretórios, botão Abrir diretório; botão Voltar uma pasta ou Abrir na linha.
+7. **Criar diretório**: abrir diretório pai, informar nome da nova pasta, botão Criar pasta aqui.
+8. **Remover diretório**: botão Remover pasta atual ou Excluir pasta da linha; somente vazio, não raiz.
+9. **Metadados**: botão Detalhes mostra bytes, data, SHA-256, versão, fator N, réplicas e estado.
+10. **Estados**: HEALTHY, UNDER_REPLICATED, RECOVERING e UNAVAILABLE são reportados pelo controlador, não simulados na UI.
+
+**Nota:** renomear/mover pastas inteiras não é suportado no endpoint de namespace atual; somente arquivos são movidos. Testar a interpretação do requisito com a equipe da disciplina e estender com segurança se necessário. Para a apresentação, o RF1 de arquivo é satisfazível pela UI após teste integrado.
+
+**Não declarar o RF1 aprovado antes do teste de navegador em EC2.** Os testes CI podem falhar sem executar runner: distinguir infraestrutura CI de falha no código.
