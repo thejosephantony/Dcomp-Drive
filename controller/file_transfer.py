@@ -89,6 +89,7 @@ def _timeout() -> httpx.Timeout:
 async def upload_content(
     request: Request,
     path: str = Query(...),
+    replication_factor: int | None = Query(default=None, ge=1, le=32),
     session: Session = Depends(get_session),
 ) -> FileMetadataResponse:
     """Reserva N réplicas, grava bytes, verifica cada nó e publica a versão."""
@@ -103,7 +104,7 @@ async def upload_content(
     data = bytes(buffer)
     sha256 = hashlib.sha256(data).hexdigest()
     operation = prepare(
-        PrepareRequest(path=path, size_bytes=len(data), sha256=sha256),
+        PrepareRequest(path=path, size_bytes=len(data), sha256=sha256, replication_factor=replication_factor),
         session,
     )
     stored_at: list[str] = []
