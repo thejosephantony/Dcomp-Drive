@@ -76,3 +76,15 @@
 **Nota:** renomear/mover pastas inteiras não é suportado no endpoint de namespace atual; somente arquivos são movidos. Testar a interpretação do requisito com a equipe da disciplina e estender com segurança se necessário. Para a apresentação, o RF1 de arquivo é satisfazível pela UI após teste integrado.
 
 **Não declarar o RF1 aprovado antes do teste de navegador em EC2.** Os testes CI podem falhar sem executar runner: distinguir infraestrutura CI de falha no código.
+
+## Implementação consolidada na branch (não homologada)
+
+Além da fase A, já existem implementações de:
+- **RF6**: sexto nó standby pré-provisionado, ativação HTTP interna e registro automático no controlador sem restart;
+- **RF7**: drain/undrain na interface, com rotina de reparação já presente no controlador;
+- **RF8**: duas operações PUT concorrentes e conferência final do SHA-256;
+- **RF9**: verificação física AES-256-GCM da réplica (hash do blob cifrado versus hash do texto claro), sem chave exposta;
+- **RF10**: botão público que calcula hash do catálogo persistente, reinicia o processo controller **apenas da sandbox**, verifica mudança do identificador de processo e compara metadados após retorno;
+- **RF12**: endpoint e tabela de eventos estruturados filtrados/sanitizados do controlador; os storages já registram eventos estruturados no próprio stdout.
+
+**O estado é implementação escrita, não prova de funcionamento.** É obrigatório homologar com `pytest`, Docker Compose e navegador externo. A última implementação da PR #23 não foi mesclada à main nem implantada no Elastic IP.
