@@ -353,7 +353,8 @@
       replicas.append(pill(file.status));
       replicas.append(el("div", "file-sub", file.replicas.length + " / " + file.replication_factor + " cópias"));
       addCell(row, replicas);
-      const actions = addCell(row, el("span"));
+      const actionsCell = addCell(row, el("div", "file-actions"));
+      const actions = actionsCell.firstElementChild;
       const detailButton = el("button", "button mini-button", "Detalhes");
       detailButton.type = "button";
       detailButton.addEventListener("click", () => showDetails(file.path));
@@ -363,7 +364,7 @@
       const renameButton = actionButton("Renomear", () => renameFile(file.path));
       const moveButton = actionButton("Mover", () => moveFile(file.path));
       const deleteButton = actionButton("Excluir", () => deleteFile(file.path));
-      actions.className = "file-actions";
+
       actions.append(detailButton, downloadButton, renameButton, moveButton, deleteButton);
       body.append(row);
     }
