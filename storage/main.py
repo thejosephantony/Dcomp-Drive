@@ -289,6 +289,35 @@ def demo_restore(_: None = Depends(_require_demo_admin)) -> dict:
     return {"node_id": NODE_ID, "paused": False}
 
 
+@app.post("/_demo/encryption/{object_id}")
+def demo_encryption_evidence(
+    object_id: str,
+    _: None = Depends(_require_demo_admin),
+) -> dict:
+    """RF9: comprova formato cifrado no disco sem expor bytes ou chaves."""
+    import hashlib
+    from storage.crypto import MAGIC
+
+    meta = store.get_metadata(object_id)
+    path = store.objects_dir / object_id
+    if not path.is_file():
+        raise HTTPException(404, "Objeto físico não localizado")
+    with path.open("rb") as file:
+        prefix = file.read(len(MAGIC))
+    # Hash do arquivo armazenado difere do hash do plaintext quando há cifra.
+    physical_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return {
+        "object_id": object_id,
+        "node_id": store.node_id,
+        "encryption": meta.encryption,
+        "encrypted_on_disk": prefix == MAGIC and meta.encryption == "AES-256-GCM",
+        "disk_sha256": physical_digest,
+        "plaintext_sha256": meta.sha256,
+        "physical_size_bytes": path.stat().st_size,
+        "plaintext_size_bytes": meta.size_bytes,
+    }
+
+
 @app.post("/_demo/corrupt/{object_id}")
 async def demo_corrupt(object_id: str, _: None = Depends(_require_demo_admin)) -> dict:
     if DEMO_PAUSED:
