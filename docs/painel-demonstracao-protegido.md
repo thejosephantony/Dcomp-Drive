@@ -22,26 +22,26 @@ automática e corrupção isolada de uma réplica descartável com scrubbing rea
 
 ## Ativação na EC2 (somente laboratório isolado)
 
-No Ubuntu, entre em \`~/Dcomp-Drive\` e confira a branch testada.
+No Ubuntu, entre em `~/Dcomp-Drive` e confira a branch testada.
 
-1. Defina \`DEMO_MODE=true\` no arquivo \`.env\` local.
+1. Defina `DEMO_MODE=true` no arquivo `.env` local.
 2. Gere uma credencial longa, por exemplo:
-   \`python3 -c 'import secrets; print(secrets.token_urlsafe(32))'\`.
-3. Coloque o resultado em \`DEMO_ADMIN_TOKEN=...\` no \`.env\`.
-4. Garanta que o serviço \`controller\` exponha somente:
-   \`127.0.0.1:8000:8000\` no Compose.
-5. Inicie \`sudo docker compose up -d --build\` e rode
-   \`sudo docker compose exec -T controller python -m pytest -q tests/test_web_dashboard.py\`.
+   `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`.
+3. Coloque o resultado em `DEMO_ADMIN_TOKEN=...` no `.env`.
+4. Garanta que o serviço `controller` exponha somente:
+   `127.0.0.1:8000:8000` no Compose.
+5. Inicie `sudo docker compose up -d --build` e rode
+   `sudo docker compose exec -T controller python -m pytest -q tests/test_web_dashboard.py`.
 6. Abra túnel privado no Windows:
-   \`ssh -N -i "$HOME\Downloads\dcomp-drive.pem" -L 8000:127.0.0.1:8000 ubuntu@34.193.62.218\`.
-7. No navegador, abra \`http://localhost:8000/\`.
+   `ssh -N -i "$HOME\Downloads\dcomp-drive.pem" -L 8000:127.0.0.1:8000 ubuntu@34.193.62.218`.
+7. No navegador, abra `http://localhost:8000/`.
 8. O painel **Modo de demonstração** será exibido; informe o token no campo
    administrativo. Ele permanece somente na página, não em localStorage.
 
 ## Sequência na própria interface (até 5 minutos)
 
 1. **Upload**: selecione um arquivo local descartável, destino
-   \`/demo-replicacao.txt\`, envie, abra **Detalhes** e mostre três réplicas
+   `/demo-replicacao.txt`, envie, abra **Detalhes** e mostre três réplicas
    em nós distintos, hash SHA-256 e status HEALTHY.
 2. **Download**: clique em **Baixar** e mostre a mensagem de integridade
    SHA-256. O navegador precisa estar em localhost ou HTTPS.
@@ -50,7 +50,7 @@ No Ubuntu, entre em \`~/Dcomp-Drive\` e confira a branch testada.
    status SUSPECT/DEAD e o novo destino de réplica no painel atualizado
    a cada dois segundos. Aguarde 3/3 e HEALTHY antes de **Restaurar nó**.
 4. **Corrupção**: faça upload de um SEGUNDO arquivo descartável no destino
-   \`/demo-corrupcao.txt\`. Com todos os nós novamente saudáveis, informe
+   `/demo-corrupcao.txt`. Com todos os nós novamente saudáveis, informe
    esse caminho no painel e clique em **Corromper 1 réplica e verificar**.
    Um byte de uma réplica física é alterado; o scrubbing SHA-256 roda e
    comunica a corrupção ao controlador. O reparador cria uma nova cópia.
@@ -62,15 +62,15 @@ No Ubuntu, entre em \`~/Dcomp-Drive\` e confira a branch testada.
 
 - O registro do painel informa ações efetuadas, alterações de estado
   e identificadores detectados pelo scrubbing. Para logs persistentes,
-  consulte \`sudo docker compose logs controller storage-1 ...\` depois.
+  consulte `sudo docker compose logs controller storage-1 ...` depois.
 - Se a recuperação for muito rápida para mostrar estados intermediários,
   destaque os eventos e a mudança na lista dos nós que hospedam réplicas.
 - O relatório 3/3 só é conclusão suficiente quando as cópias aparecem em
   nós distintos depois da falha e da corrupção.
 - Se um comando falhar, **não repita corrupção em arquivos reais**. Confirme
   5 storages HEALTHY, botão Restaurar e token correto antes de continuar.
-- \`DEMO_MODE=false\` (ou token ausente) esconde o painel e retorna erro
-  nas rotas administrativas. Não use \`docker compose down -v\`.
+- `DEMO_MODE=false` (ou token ausente) esconde o painel e retorna erro
+  nas rotas administrativas. Não use `docker compose down -v`.
 
 **Para entrega acadêmica**: registre que o botão "Simular falha lógica"
 não encerra um contêiner Docker; ele interrompe respostas HTTP e heartbeats
