@@ -24,6 +24,11 @@ def test_public_gateway_only_allows_explicit_browser_routes():
         ("GET", "/docs"), ("GET", "/openapi.json"),
         ("GET", "/_demo/restore"),
         ("GET", "/ui/../../etc/passwd"),
+        ("GET", "/ui/./app.js"),
+        ("GET", "/ui/%2e%2e/app.js"),
+        ("GET", "/ui/..\\app.js"),
+        ("GET", "/ui/../app.js"),
+        ("GET", "/ui/folder/../../app.js"),
         ("POST", "/demo/public/nodes/storage-7/offline"),
         ("PUT", "/demo/public/nodes/storage-1/offline"),
     ]:
