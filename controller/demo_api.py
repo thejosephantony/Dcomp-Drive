@@ -47,10 +47,14 @@ def require_demo_admin(x_demo_token: str | None = Header(default=None)) -> None:
 
 
 @router.get("/config")
-def demo_config() -> dict[str, bool]:
-    """Não expõe segredos; público só em stack explicitamente isolada."""
+def demo_config() -> dict[str, bool | int]:
+    """Não expõe segredos; inclui apenas o limite real de upload da instância."""
     public = _public_enabled()
-    return {"enabled": public or (_enabled() and len(_secret()) >= 32), "public": public}
+    return {
+        "enabled": public or (_enabled() and len(_secret()) >= 32),
+        "public": public,
+        "max_upload_bytes": int(os.getenv("MAX_TRANSFER_BYTES", "33554432")),
+    }
 
 
 def _public_enabled() -> bool:
