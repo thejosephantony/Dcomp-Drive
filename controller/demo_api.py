@@ -114,3 +114,34 @@ async def corrupt_demo_replica(
     node = _require_node(session, info.replicas[0].node_id)
     result = await _send(node, "/_demo/corrupt/" + info.version_id, _secret())
     return {"action": "corruption", "path": request.path, "node_id": node.node_id, **result}
+
+
+@router.post("/nodes/{node_id}/drain")
+def drain_demo_node(
+    node_id: str,
+    _: None = Depends(require_demo_admin),
+    session: Session = Depends(get_session),
+) -> dict[str, str]:
+    """RF7: drenagem somente via controles administrativos do laboratório."""
+    node = _require_node(session, node_id)
+    if node.state != "HEALTHY":
+        raise HTTPException(409, "O nó deve estar saudável antes da drenagem")
+    if session.query(Node).filter(Node.state == "HEALTHY").count() < 5:
+        raise HTTPException(409, "Requer cinco nós saudáveis antes da drenagem")
+    node.state = "DRAINING"
+    session.commit()
+    return {"node_id": node_id, "state": node.state}
+
+
+@router.post("/nodes/{node_id}/undrain")
+def undrain_demo_node(
+    node_id: str,
+    _: None = Depends(require_demo_admin),
+    session: Session = Depends(get_session),
+) -> dict[str, str]:
+    node = _require_node(session, node_id)
+    if node.state != "DRAINING":
+        raise HTTPException(409, "Nó não está sendo drenado")
+    node.state = "HEALTHY"
+    session.commit()
+    return {"node_id": node_id, "state": node.state}
