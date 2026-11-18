@@ -30,7 +30,7 @@
         <span class="side-label">AMBIENTE</span>
         <div class="env-tag"><span class="status-dot"></span> AWS EC2 · Laboratório</div>
         <p>Controlador FastAPI, PostgreSQL e cinco nós Docker em uma única instância.</p>
-        <p>Use o túnel SSH. Não exponha a API à internet.</p>
+        <p>Ambiente público somente em stack isolada com HTTPS.</p>
       </div>
     </aside>
 
@@ -239,9 +239,10 @@
               <h2 id="demo-title">Modo de demonstração</h2>
               <p>Falhas lógicas reais, recuperação automática e corrupção de uma única réplica de teste.</p>
             </div>
-            <span class="health-badge is-waiting">Acesso administrativo</span>
+            <span class="health-badge is-waiting">Laboratório controlado</span>
           </div>
-          <p class="small-note">Use apenas em laboratório isolado. O token permanece somente nesta página e não é salvo no navegador. Para executar ações, acesse por HTTPS ou localhost via SSH.</p>
+          <p id="demo-private-note" class="small-note">Controles administrativos da instância privada: requerem token e HTTPS ou localhost.</p>
+          <p id="demo-public-note" class="small-note" hidden>Laboratório público descartável. Visitantes não precisam de login nem de token; os nós se recuperam automaticamente.</p>
           <label class="field-label" for="demo-token">Token administrativo</label>
           <input id="demo-token" class="demo-input" type="password" autocomplete="off" placeholder="Cole o token privado do laboratório">
           <p id="demo-security" class="small-note" hidden>Este endereço não é seguro. Abra o dashboard via HTTPS ou http://localhost:8000/ por SSH.</p>
@@ -256,6 +257,7 @@
                 <button id="demo-restore" type="button" class="button">Restaurar nó</button>
                 <button id="demo-drain" type="button" class="button">Drenar nó (RF7)</button>
                 <button id="demo-undrain" type="button" class="button">Reabilitar nó</button>
+                <button id="demo-reset" type="button" class="button">Restaurar todos os nós</button>
               </div>
             </div>
             <div class="demo-column">
