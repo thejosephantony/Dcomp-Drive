@@ -287,6 +287,9 @@
         throw new Error(readableError(response, body));
       }
       const buffer = await response.arrayBuffer();
+      if (!window.crypto || !window.crypto.subtle) {
+        throw new Error("A verificação SHA-256 requer HTTPS ou acesso via http://localhost:8000/ (túnel SSH).");
+      }
       const digest = await crypto.subtle.digest("SHA-256", buffer);
       const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
       if (hash !== info.sha256 || buffer.byteLength !== Number(info.size_bytes)) {
