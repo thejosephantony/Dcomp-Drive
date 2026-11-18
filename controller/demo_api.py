@@ -40,8 +40,23 @@ def require_demo_admin(x_demo_token: str | None = Header(default=None)) -> None:
 
 @router.get("/config")
 def demo_config() -> dict[str, bool]:
-    """Não expõe o segredo e não habilita operações por si só."""
-    return {"enabled": _enabled() and len(_secret()) >= 32}
+    """Não expõe segredos; público só em stack explicitamente isolada."""
+    public = _public_enabled()
+    return {"enabled": public or (_enabled() and len(_secret()) >= 32), "public": public}
+
+
+def _public_enabled() -> bool:
+    return (
+        _enabled()
+        and os.getenv("PUBLIC_DEMO_MODE", "false").lower() == "true"
+        and os.getenv("PUBLIC_DEMO_ISOLATED", "false").lower() == "true"
+        and len(_secret()) >= 32
+    )
+
+
+def require_public_demo() -> None:
+    if not _public_enabled():
+        raise HTTPException(404, "Demonstração pública não disponível")
 
 
 def _require_node(session: Session, node_id: str) -> Node:
@@ -145,3 +160,73 @@ def undrain_demo_node(
     node.state = "HEALTHY"
     session.commit()
     return {"node_id": node_id, "state": node.state}
+
+
+# A interface pública não possui token. A autorização para acionar nós
+# ocorre exclusivamente do controlador para o storage, na rede Docker da
+# stack descartável. Não publicar essas rotas na stack principal.
+@router.post("/public/nodes/{node_id}/offline")
+async def public_offline(
+    node_id: str,
+    _: None = Depends(require_public_demo),
+    session: Session = Depends(get_session),
+) -> dict:
+    return await simulate_node_failure(node_id, None, session)
+
+
+@router.post("/public/nodes/{node_id}/restore")
+async def public_restore(
+    node_id: str,
+    _: None = Depends(require_public_demo),
+    session: Session = Depends(get_session),
+) -> dict:
+    return await restore_node(node_id, None, session)
+
+
+@router.post("/public/nodes/{node_id}/drain")
+def public_drain(
+    node_id: str,
+    _: None = Depends(require_public_demo),
+    session: Session = Depends(get_session),
+) -> dict[str, str]:
+    return drain_demo_node(node_id, None, session)
+
+
+@router.post("/public/nodes/{node_id}/undrain")
+def public_undrain(
+    node_id: str,
+    _: None = Depends(require_public_demo),
+    session: Session = Depends(get_session),
+) -> dict[str, str]:
+    return undrain_demo_node(node_id, None, session)
+
+
+@router.post("/public/files/corrupt")
+async def public_corrupt(
+    request: CorruptDemoRequest,
+    _: None = Depends(require_public_demo),
+    session: Session = Depends(get_session),
+) -> dict:
+    return await corrupt_demo_replica(request, None, session)
+
+
+@router.post("/public/reset")
+async def public_reset(
+    _: None = Depends(require_public_demo),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Reabilita os cinco nós do laboratório (nunca apaga arquivos)."""
+    results: list[str] = []
+    for node_id in ("storage-1", "storage-2", "storage-3", "storage-4", "storage-5"):
+        node = session.get(Node, node_id)
+        if node is None:
+            continue
+        if node.state == "DRAINING":
+            node.state = "HEALTHY"
+        try:
+            await _send(node, "/_demo/restore", _secret())
+            results.append(node_id)
+        except HTTPException:
+            pass
+    session.commit()
+    return {"restored": results, "total": len(results)}
