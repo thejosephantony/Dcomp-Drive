@@ -120,6 +120,7 @@
         $("demo-private-note").hidden = true;
         $("demo-public-note").hidden = false;
         $("demo-expansion").hidden = false;
+        $("demo-persistence").hidden = false;
       }
       $("demo-panel").hidden = false;
       $("demo-nav").hidden = false;
@@ -589,6 +590,47 @@
     if(node) demoAction("/demo/nodes/" + encodeURIComponent(node) + "/undrain",
       $("demo-undrain"), {}, "Reabilitar nó drenado " + node);
   });
+  $("demo-persistence-run").addEventListener("click", async () => {
+    if (!state.publicDemo) return;
+    if (!window.confirm("Reiniciar o controlador SOMENTE do laboratório descartável para testar a persistência?")) return;
+    const btn = $("demo-persistence-run"), status = $("demo-persistence-status");
+    btn.disabled = true;
+    try {
+      const before = await api("/demo/public/persistence/snapshot");
+      status.textContent = "RF10: snapshot anterior " + before.catalog_sha256.slice(0, 16) + "…";
+      demoLog("RF10: " + before.files + " arquivos e " + before.directories + " diretórios; controlador " + before.controller_instance.slice(0, 8));
+      await api("/demo/public/persistence/restart", { method: "POST" });
+      status.textContent = "RF10: reiniciando processo controller; aguardando reaparecer...";
+      let after = null;
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        try {
+          const check = await api("/demo/public/persistence/snapshot");
+          if (check.controller_instance !== before.controller_instance) {
+            after = check;
+            break;
+          }
+        } catch (_) { /* esperado durante o reinício */ }
+      }
+      if (!after) throw new Error("O processo não reapareceu após o reinício.");
+      const preserved = before.catalog_sha256 === after.catalog_sha256 &&
+        before.files === after.files && before.directories === after.directories;
+      status.textContent = "RF10: reinício comprovado: " + before.controller_instance.slice(0,8) +
+        " → " + after.controller_instance.slice(0,8) +
+        " · catálogo " + (preserved ? "PRESERVADO" : "DIVERGENTE") +
+        " · SHA-256 " + after.catalog_sha256.slice(0,16) + "…";
+      demoLog(status.textContent);
+      message(preserved ? "RF10: metadados preservados após reinício real." :
+        "RF10: metadados divergentes após reinício. Verifique o cluster.", !preserved);
+      await refresh();
+    } catch (err) {
+      status.textContent = "RF10: erro: " + err.message;
+      message("RF10: " + err.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
   $("demo-activate-six").addEventListener("click", async () => {
     if (!state.publicDemo) return;
     if (!window.confirm("Ativar sexto Storage Node e iniciar seu registro automático?")) return;
