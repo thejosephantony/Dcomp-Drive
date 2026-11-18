@@ -678,3 +678,25 @@ def test_rf6_rejects_unregistered_disk(cluster):
         "objects": [],
     })
     assert result.status_code == 409
+
+
+def test_gateway_accepts_replication_factor_from_web(cluster):
+    client, fake, _ = cluster
+    response = client.put(
+        "/files/content",
+        params={"path": "/web-rf3-n2.txt", "replication_factor": 2},
+        content=b"web configurable replication",
+    )
+    assert response.status_code == 201, response.text
+    data = response.json()
+    assert data["replication_factor"] == 2
+    assert data["status"] == "HEALTHY"
+    assert len(data["replicas"]) == 2
+    assert len({r["node_id"] for r in data["replicas"]}) == 2
+
+    excessive = client.put(
+        "/files/content",
+        params={"path": "/web-rf3-n6.txt", "replication_factor": 6},
+        content=b"not enough nodes",
+    )
+    assert excessive.status_code == 507, excessive.text
