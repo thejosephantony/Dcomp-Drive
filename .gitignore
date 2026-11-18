@@ -16,3 +16,7 @@ venv/
 # Segredos locais
 .env
 *.env.local
+
+# Segredos específicos do laboratório público isolado
+.env.public
+.env.public.*
