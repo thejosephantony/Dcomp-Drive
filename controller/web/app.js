@@ -3,7 +3,7 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
-  const state = { nodes: [], files: [], demoEnabled: false, publicDemo: false };
+  const state = { nodes: [], files: [], demoEnabled: false, publicDemo: false, maxUploadBytes: 32 * 1024 * 1024 };
   const labels = { HEALTHY: "HEALTHY", SUSPECT: "SUSPECT", DEAD: "DEAD", UNDER_REPLICATED: "SUB-REPLICADO", UNAVAILABLE: "INDISPONÍVEL" };
 
   function formatBytes(value) {
@@ -113,6 +113,9 @@
       if (!config.enabled) return;
       state.demoEnabled = true;
       state.publicDemo = Boolean(config.public);
+      state.maxUploadBytes = Math.max(1, Number(config.max_upload_bytes) || 32 * 1024 * 1024);
+      $("upload-limit-note").textContent = "Limite real do gateway: " + formatBytes(state.maxUploadBytes) +
+        " por arquivo. Escolha N cópias em máquinas lógicas distintas.";
       if (state.publicDemo) {
         $("demo-token").hidden = true;
         const label = document.querySelector('label[for="demo-token"]');
@@ -517,7 +520,7 @@
     const path = $("remote-path").value.trim();
     if (!selected) return message("Selecione um arquivo.", true);
     if (!path.startsWith("/") || path === "/" || path.endsWith("/")) return message("Informe um caminho absoluto, como /arquivo.txt.", true);
-    if (selected.size > 32 * 1024 * 1024) return message("Este painel aceita arquivos de até 32 MiB na configuração atual.", true);
+    if (selected.size > state.maxUploadBytes) return message("Limite atual de upload: " + formatBytes(state.maxUploadBytes) + ".", true);
     const button = $("upload-button");
     button.disabled = true;
     button.textContent = "Enviando e replicando...";
