@@ -103,6 +103,13 @@ async def report_forever() -> None:
     reconciled = False
     async with httpx.AsyncClient(timeout=3) as client:
         while True:
+            # RF6: o sexto storage está pronto, mas só se registra quando
+            # o visitante ativa o nó. A ativação sobrevive ao reinício.
+            if os.getenv("DEMO_STANDBY", "false").lower() == "true" and not (
+                DATA_DIR / ".demo_activated"
+            ).exists():
+                await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+                continue
             if DEMO_PAUSED and DEMO_OFFLINE_AT is not None:
                 maximum = float(os.getenv("DEMO_AUTO_RESTORE_SECONDS", "60"))
                 if maximum > 0 and time.monotonic() - DEMO_OFFLINE_AT >= maximum:
@@ -287,6 +294,16 @@ def demo_restore(_: None = Depends(_require_demo_admin)) -> dict:
     DEMO_OFFLINE_AT = None
     logger.info("demo_node_restored node=%s", NODE_ID)
     return {"node_id": NODE_ID, "paused": False}
+
+
+@app.post("/_demo/activate")
+def demo_activate(_: None = Depends(_require_demo_admin)) -> dict:
+    """RF6: habilita registro/heartbeat sem reiniciar o controlador."""
+    if os.getenv("DEMO_STANDBY", "false").lower() != "true":
+        raise HTTPException(409, "O nó não está configurado como standby")
+    (DATA_DIR / ".demo_activated").touch(mode=0o600, exist_ok=True)
+    logger.warning("demo_storage_activated node=%s", NODE_ID)
+    return {"node_id": NODE_ID, "activated": True}
 
 
 @app.post("/_demo/encryption/{object_id}")
