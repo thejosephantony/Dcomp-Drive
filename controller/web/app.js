@@ -121,6 +121,8 @@
         $("demo-public-note").hidden = false;
         $("demo-expansion").hidden = false;
         $("demo-persistence").hidden = false;
+        $("demo-structured-events").hidden = false;
+        setTimeout(() => refreshStructuredEvents(), 700);
       }
       $("demo-panel").hidden = false;
       $("demo-nav").hidden = false;
@@ -590,6 +592,32 @@
     if(node) demoAction("/demo/nodes/" + encodeURIComponent(node) + "/undrain",
       $("demo-undrain"), {}, "Reabilitar nó drenado " + node);
   });
+  async function refreshStructuredEvents() {
+    if (!state.publicDemo) return;
+    try {
+      const data = await api("/demo/public/events");
+      const body = $("demo-events-table");
+      body.replaceChildren();
+      for (const item of data.events || []) {
+        const row = el("tr");
+        const time = new Date(item.timestamp).toLocaleTimeString("pt-BR");
+        const ref = item.object_id || item.version || item.node || item.target || "—";
+        for (const value of [time, item.component, item.event, ref]) addCell(row, value);
+        body.append(row);
+      }
+      if (!body.children.length) {
+        const row = el("tr"), cell = addCell(row, "Aguardando eventos reais...", "empty");
+        cell.colSpan = 4;
+        body.append(row);
+      }
+    } catch (error) {
+      $("demo-events-table").replaceChildren();
+      demoLog("RF12: falha ao consultar logs: " + error.message);
+    }
+  }
+  $("demo-refresh-events").addEventListener("click", refreshStructuredEvents);
+  setInterval(refreshStructuredEvents, 12000);
+  
   $("demo-persistence-run").addEventListener("click", async () => {
     if (!state.publicDemo) return;
     if (!window.confirm("Reiniciar o controlador SOMENTE do laboratório descartável para testar a persistência?")) return;
