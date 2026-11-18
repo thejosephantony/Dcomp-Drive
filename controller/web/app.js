@@ -122,6 +122,87 @@
     }
   }
 
+
+  async function listDirectory(target) {
+    const path = target || $("namespace-path").value.trim();
+    const entries = await api("/files/entries?path=" + encodeURIComponent(path));
+    $("namespace-path").value = path;
+    const body = $("namespace-rows"); body.replaceChildren();
+    if (!entries.length) {
+      const tr = el("tr"); const td = addCell(tr, "Diretório vazio", "empty"); td.colSpan = 4; body.append(tr);
+    }
+    for(const entry of entries) {
+      const tr = el("tr"), fullPath = (path === "/" ? "" : path) + "/" + entry.name;
+      const btn = el("button", "button mini-button", entry.name);
+      btn.type = "button";
+      btn.addEventListener("click", () => entry.kind === "dir"
+        ? listDirectory(fullPath).catch(e=>message(e.message,true)) : showDetails(fullPath));
+      addCell(tr,btn); addCell(tr,entry.kind === "dir" ? "Diretório" : "Arquivo");
+      addCell(tr,formatBytes(entry.size)); addCell(tr,entry.state || "—"); body.append(tr);
+    }
+    $("namespace-notice").textContent = path + " · " + entries.length + " entradas";
+  }
+
+  async function manageDirectory(create) {
+    const path = $("namespace-path").value.trim();
+    if (!path.startsWith("/") || path === "/") return message("Informe caminho absoluto diferente de /.",true);
+    if (!create && !window.confirm("Remover diretório vazio? " + path)) return;
+    try {
+      await api(create ? "/files/directories" : "/files/directories?path=" + encodeURIComponent(path),
+        create ? {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path})} : {method:"DELETE"});
+      message((create ? "Diretório criado: " : "Diretório removido: ") + path,false);
+      await listDirectory(path.slice(0,path.lastIndexOf("/")) || "/");
+    } catch(e) { message("Diretório: "+e.message,true); }
+  }
+
+  async function moveFile(path) {
+    const dst=window.prompt("Novo caminho absoluto para " + path + ":",path);
+    if(!dst || dst === path) return;
+    try {
+      await api("/files/move",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({src:path,dst:dst.trim()})});
+      message("Arquivo movido para "+dst,false); await refresh();
+      await listDirectory($("namespace-path").value).catch(()=>{});
+    } catch(e) {message("Mover: "+e.message,true);}
+  }
+
+  async function deleteFile(path) {
+    if(!window.confirm("Excluir arquivo e réplicas?\n"+path))return;
+    try {
+      const res=await api("/files/entry?path="+encodeURIComponent(path),{method:"DELETE"});
+      message("Arquivo removido: "+path+(res.pending_cleanup?" (limpeza física pendente)":""),false);
+      await refresh(); await listDirectory($("namespace-path").value).catch(()=>{});
+    } catch(e) {message("Excluir: "+e.message,true);}
+  }
+
+  function renderCapacity() {
+    const body=$("capacity-rows"); body.replaceChildren();
+    for(const node of state.nodes) for(const disk of node.disks || []) {
+      const tr=el("tr"),pct=disk.capacity_bytes>0?(100*disk.used_bytes/disk.capacity_bytes).toFixed(1)+"%":"—";
+      for(const val of [node.node_id,disk.disk_id,formatBytes(disk.capacity_bytes),formatBytes(disk.used_bytes),formatBytes(disk.free_bytes),pct])addCell(tr,val);
+      body.append(tr);
+    }
+  }
+
+  async function refreshTelemetry() {
+    try {
+      const [m,s]=await Promise.all([api("/metrics"),api("/status")]);
+      const target=$("cluster-metrics"); target.replaceChildren();
+      const data=[
+        ["Reparos em andamento",s.repairs_in_progress??0],
+        ["Arquivos por estado",Object.entries(s.files_by_state||{}).map(([k,v])=>k+": "+v).join(" · ")||"—"],
+        ["Réplicas por estado",Object.entries(m.replicas_by_state||{}).map(([k,v])=>k+": "+v).join(" · ")||"—"],
+        ["Requisições HTTP",m.requests_total??"—"],
+        ["Latência média HTTP",m.request_latency_avg_ms===undefined?"—":m.request_latency_avg_ms+" ms"],
+        ["Tempo ativo controlador",m.uptime_seconds===undefined?"—":Math.floor(m.uptime_seconds)+" s"]
+      ];
+      for(const [label,val] of data){
+        const div=el("div","detail-item");
+        div.append(el("span","detail-label",label),el("strong","detail-value",val));target.append(div);
+      }
+      renderCapacity();
+    } catch(e){$("cluster-metrics").textContent="Falha: "+e.message;}
+  }
+
   function renderNodes() {
     const grid = $("nodes-grid");
     grid.replaceChildren();
@@ -185,7 +266,11 @@
       const downloadButton = el("button", "button mini-button", "Baixar");
       downloadButton.type = "button";
       downloadButton.addEventListener("click", () => downloadFile(file.path, downloadButton));
-      actions.append(detailButton, downloadButton);
+      const mover=el("button","button mini-button","Mover");
+      mover.type="button";mover.addEventListener("click",()=>moveFile(file.path));
+      const excluir=el("button","button mini-button","Excluir");
+      excluir.type="button";excluir.addEventListener("click",()=>deleteFile(file.path));
+      actions.append(detailButton,downloadButton,mover,excluir);
       body.append(row);
     }
   }
@@ -217,6 +302,7 @@
         }
       }
       renderNodes();
+      renderCapacity();
       updateDemoNodeOptions();
       updateBadge(state.nodes.length > 0 && state.nodes.every((n) => n.state === "HEALTHY"));
     } else {
@@ -323,7 +409,8 @@
     button.disabled = true;
     button.textContent = "Enviando e replicando...";
     try {
-      const info = await api("/files/content?path=" + encodeURIComponent(path), {
+      const factor = Number($("upload-replicas").value);
+      const info = await api("/files/content?path=" + encodeURIComponent(path) + "&replication_factor=" + factor, {
         method: "PUT",
         headers: { "Content-Type": "application/octet-stream" },
         body: selected
@@ -338,6 +425,13 @@
       button.textContent = "Enviar para o cluster →";
     }
   }
+
+  $("namespace-list").addEventListener("click",()=>{
+    listDirectory().catch(e=>message("Listagem: "+e.message,true));
+  });
+  $("namespace-create").addEventListener("click",()=>manageDirectory(true));
+  $("namespace-remove").addEventListener("click",()=>manageDirectory(false));
+  $("metrics-refresh").addEventListener("click",refreshTelemetry);
 
   $("local-file").addEventListener("change", () => {
     const selected = $("local-file").files[0];
@@ -372,7 +466,10 @@
   });
 
   refresh();
+  listDirectory("/").catch(()=>{});
+  refreshTelemetry();
   initDemo();
   setInterval(() => { if (state.demoEnabled) refresh(); }, 2000);
   setInterval(() => { if (!state.demoEnabled) refresh(); }, 10000);
+  setInterval(refreshTelemetry, 10000);
 })();
