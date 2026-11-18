@@ -113,3 +113,49 @@ def test_storage_failure_simulation_is_authenticated_and_reversible(monkeypatch,
         restored = client.post("/_demo/restore", headers=headers)
         assert restored.status_code == 200
     assert client.get("/health").status_code == 200
+
+
+
+def test_public_demo_requires_explicit_isolation(monkeypatch):
+    import pytest
+    from fastapi import HTTPException
+    from controller.demo_api import demo_config, require_public_demo
+
+    monkeypatch.setenv("DEMO_MODE", "true")
+    monkeypatch.setenv("DEMO_ADMIN_TOKEN", "A" * 48)
+    monkeypatch.setenv("PUBLIC_DEMO_MODE", "true")
+    monkeypatch.delenv("PUBLIC_DEMO_ISOLATED", raising=False)
+
+    assert demo_config()["public"] is False
+    with pytest.raises(HTTPException) as error:
+        require_public_demo()
+    assert error.value.status_code == 404
+
+    monkeypatch.setenv("PUBLIC_DEMO_ISOLATED", "true")
+    assert demo_config() == {"enabled": True, "public": True}
+    require_public_demo()
+
+
+def test_public_disabled_by_default_does_not_require_secret(monkeypatch):
+    from controller.demo_api import demo_config
+
+    monkeypatch.delenv("PUBLIC_DEMO_MODE", raising=False)
+    monkeypatch.delenv("DEMO_MODE", raising=False)
+    monkeypatch.delenv("DEMO_ADMIN_TOKEN", raising=False)
+    assert demo_config()["public"] is False
+    assert demo_config()["enabled"] is False
+
+
+def test_rf12_event_log_drops_unrelated_messages_and_raw_content():
+    import logging
+    from controller.logging_config import DemoEventHandler, public_events_snapshot
+
+    handler = DemoEventHandler()
+    handler.emit(logging.LogRecord(
+        "controller.repair", logging.WARNING, "test.py", 12,
+        "repair_completed node=storage-3 version=abc123 token=SECRET_UNSAFE",
+        (), None,
+    ))
+    recent = public_events_snapshot(10)
+    assert any(item["event"] == "repair_completed" for item in recent)
+    assert "SECRET_UNSAFE" not in repr(recent)
