@@ -255,3 +255,20 @@ async def public_encryption_evidence(
     session: Session = Depends(get_session),
 ) -> dict:
     return await private_encryption_evidence(request, None, session)
+
+
+
+@router.post("/public/nodes/activate-six")
+async def public_activate_sixth_node(
+    _: None = Depends(require_public_demo),
+    session: Session = Depends(get_session),
+) -> dict:
+    """RF6: sexto nó preprovisionado registra-se em runtime, sem restart."""
+    from types import SimpleNamespace
+    if session.query(Node).filter(Node.state == "HEALTHY").count() < 5:
+        raise HTTPException(409, "Recupere os cinco nós iniciais primeiro")
+    if session.get(Node, "storage-6") is not None:
+        return {"node_id": "storage-6", "already_registered": True}
+    standby = SimpleNamespace(address="http://storage-6:9000")
+    result = await _send(standby, "/_demo/activate", _secret())
+    return {"action": "activate", **result}
