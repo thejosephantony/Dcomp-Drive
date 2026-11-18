@@ -20,7 +20,10 @@
       <nav class="nav" aria-label="Navegação principal">
         <a href="#overview" class="nav-link active"><span aria-hidden="true">◈</span> Visão geral</a>
         <a href="#files" class="nav-link"><span aria-hidden="true">▤</span> Arquivos</a>
+        <a href="#namespace" class="nav-link"><span aria-hidden="true">▧</span> Diretórios</a>
         <a href="#nodes" class="nav-link"><span aria-hidden="true">▦</span> Storage Nodes</a>
+        <a href="#observability" class="nav-link"><span aria-hidden="true">◷</span> Monitoramento</a>
+        <a href="#requirements" class="nav-link"><span aria-hidden="true">✓</span> Requisitos</a>
         <a id="demo-nav" href="#demo-panel" class="nav-link" hidden><span aria-hidden="true">⚙</span> Demonstração</a>
       </nav>
       <div class="sidebar-bottom">
@@ -100,7 +103,13 @@
               </label>
               <label for="remote-path" class="field-label">Destino no DComp Drive</label>
               <input id="remote-path" type="text" placeholder="/meu-arquivo.pdf" required spellcheck="false" maxlength="1024">
-              <small class="field-help">Limite do gateway: 32 MiB por arquivo na configuração atual. Use a raiz (/).</small>
+              <label class="field-label" for="upload-replicas">Fator de replicação (RF3)</label>
+              <select id="upload-replicas" class="demo-input">
+                <option value="1">N = 1</option><option value="2">N = 2</option>
+                <option value="3" selected>N = 3 (padrão da demonstração)</option>
+                <option value="4">N = 4</option><option value="5">N = 5</option>
+              </select>
+              <small class="field-help">Escolha N cópias em nós lógicos distintos. Para demonstrar falhas e corrupção, use N=3. Limite do gateway: 32 MiB.</small>
               <button id="upload-button" class="button button-primary full" type="submit">Enviar para o cluster <span aria-hidden="true">→</span></button>
             </form>
           </section>
@@ -135,6 +144,32 @@
           <div id="detail-replicas" class="replica-list"></div>
         </section>
 
+        
+        <section id="namespace" class="panel management-panel" aria-labelledby="namespace-title">
+          <div class="panel-head">
+            <div><div class="eyebrow">RF1 · NAMESPACE PERSISTENTE</div><h2 id="namespace-title">Arquivos e diretórios</h2>
+              <p>Listar pastas, criar e remover diretórios vazios. Arquivos podem ser movidos e excluídos na tabela acima.</p>
+            </div>
+          </div>
+          <div class="manage-form">
+            <label class="field-label" for="namespace-path">Diretório atual</label>
+            <input id="namespace-path" class="demo-input" type="text" value="/" spellcheck="false">
+            <div class="demo-actions">
+              <button id="namespace-list" type="button" class="button">Listar diretório</button>
+              <button id="namespace-create" type="button" class="button">Criar diretório</button>
+              <button id="namespace-remove" type="button" class="button">Remover diretório vazio</button>
+            </div>
+            <p class="small-note">Para criar ou remover, informe o caminho absoluto (ex.: /demo-pasta). A raiz não pode ser removida.</p>
+          </div>
+          <div id="namespace-notice" class="small-note" role="status" aria-live="polite"></div>
+          <div class="table-scroll">
+            <table class="files-table">
+              <thead><tr><th>Nome</th><th>Tipo</th><th>Bytes</th><th>Estado</th></tr></thead>
+              <tbody id="namespace-rows"><tr><td colspan="4" class="empty">Clique em Listar diretório.</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
         <div class="section-heading" id="nodes">
           <div>
             <h2>Storage Nodes</h2>
@@ -148,7 +183,49 @@
         </div>
 
 
-        <section id="demo-panel" class="panel demo-panel" aria-labelledby="demo-title" hidden>
+
+        <section id="observability" class="panel management-panel" aria-labelledby="observability-title">
+          <div class="panel-head">
+            <div><div class="eyebrow">RF5 · RF7 · RF11 · RF12</div>
+              <h2 id="observability-title">Capacidade, recuperação e métricas</h2>
+              <p>Indicadores coletados do controlador e dos cinco Storage Nodes. A interface não inventa resultados de testes.</p>
+            </div>
+            <button id="metrics-refresh" type="button" class="button button-quiet">Atualizar métricas</button>
+          </div>
+          <div id="cluster-metrics" class="metrics-detail">Carregando indicadores...</div>
+          <h3>Capacidade por disco</h3>
+          <div class="table-scroll"><table class="files-table">
+            <thead><tr><th>Nó</th><th>Disco</th><th>Total</th><th>Usado</th><th>Livre</th><th>Uso</th></tr></thead>
+            <tbody id="capacity-rows"></tbody>
+          </table></div>
+          <p class="small-note">A contagem de bytes do gateway web não representa o tráfego direto CLI↔Storage Nodes.</p>
+        </section>
+
+        <section id="requirements" class="panel management-panel" aria-labelledby="requirements-title">
+          <div class="panel-head"><div><div class="eyebrow">RASTREABILIDADE ACADÊMICA</div>
+            <h2 id="requirements-title">Painel de requisitos RF1–RF12</h2>
+            <p>Indica a função associada e quais comprovações ainda exigem teste integrado.</p>
+          </div></div>
+          <div class="table-scroll"><table class="files-table">
+            <thead><tr><th>Requisito</th><th>Onde demonstrar</th><th>O que comprova</th></tr></thead>
+            <tbody>
+              <tr><td>RF1 · Arquivos e diretórios</td><td>Arquivos / Diretórios</td><td>Put, get, rm, mv, ls, mkdir, rmdir, metadados</td></tr>
+              <tr><td>RF2 · Interface</td><td>Painel web / API</td><td>Operações pelo navegador</td></tr>
+              <tr><td>RF3 · Replicação</td><td>Upload / Detalhes</td><td>N configurável e localização das cópias</td></tr>
+              <tr><td>RF4 · Integridade</td><td>Detalhes / Demonstração</td><td>SHA-256 e corrupção com scrubbing</td></tr>
+              <tr><td>RF5 · Falha e reparação</td><td>Storage Nodes / Demonstração</td><td>Heartbeat, estado DEAD e 3/3 restaurado</td></tr>
+              <tr><td>RF6 · Descoberta</td><td>Storage Nodes</td><td>Registro/reconciliação; ingresso de sexto nó ainda requer ensaio</td></tr>
+              <tr><td>RF7 · Espaço e drain</td><td>Monitoramento / API</td><td>Capacidade e drain; ação em controle privado</td></tr>
+              <tr><td>RF8 · Concorrência</td><td>Teste automatizado / API</td><td>Conflitos de escrita e leitura íntegra; ensaio web pendente</td></tr>
+              <tr><td>RF9 · Criptografia</td><td>Configuração do armazenamento</td><td>AES-256-GCM; sem expor chave ou alternar no navegador</td></tr>
+              <tr><td>RF10 · Persistência</td><td>Metadados / Ensaio de reinício</td><td>Comparação antes e depois do reinício; ensaio web pendente</td></tr>
+              <tr><td>RF11 · Estado</td><td>Monitoramento</td><td>Nós, discos, estados e recuperação</td></tr>
+              <tr><td>RF12 · Logs</td><td>Registro da apresentação / Logs</td><td>Eventos estruturados; visualizador sanitizado pendente</td></tr>
+            </tbody>
+          </table></div>
+        </section>
+        
+                <section id="demo-panel" class="panel demo-panel" aria-labelledby="demo-title" hidden>
           <div class="panel-head">
             <div>
               <div class="eyebrow">APRESENTAÇÃO ACADÊMICA</div>
