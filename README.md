@@ -38,6 +38,20 @@ Um arquivo só é publicado após a confirmação das `N` réplicas exigidas. Em
 | Segurança dos dados | AES-256-GCM opcional, configurado nos Storage Nodes |
 | Observabilidade | `/status`, `/metrics` e logs estruturados |
 
+## Demonstração pública na EC2 (RF1–RF12)
+
+Esta versão inclui uma **stack pública descartável** separada do cluster privado. O objetivo é acessar `https://34.193.62.218/` diretamente pelo navegador, **sem login, token, SSH ou ngrok para o visitante**. A URL só estará disponível depois de concluída a implantação e a emissão de certificado HTTPS na EC2.
+
+**Guia de implantação:** [docs/deploy-ip-publico-ec2.md](docs/deploy-ip-publico-ec2.md).
+
+- `docker-compose.yml`: projeto original privado, com seus próprios arquivos e volumes (controlador em `127.0.0.1:8000`).
+- `docker-compose.public.yml`: projeto `dcomp-public`, PostgreSQL e volumes **independentes**, com controlador em `127.0.0.1:18001`. Cinco storages ativos e um sexto em espera para ensaio de descoberta automática.
+- `deploy/nginx-dcomp-public.conf`: proxy HTTPS no Elastic IP com allowlist de operações de navegador. O controlador privado e as APIs de administração não são publicados.
+- `scripts/init_public_lab.py`: gera credenciais internas, senha do banco e chave AES-256-GCM, sem imprimi-las.
+- `controller/web/`: explorador RF1, fator N (RF3), SHA-256, falha lógica, re-replicação, sexto nó (RF6), drain (RF7), concorrência (RF8), evidência de cifra física (RF9), reinício real apenas do controlador descartável (RF10), estado (RF11) e eventos sanitizados (RF12).
+
+**Limitações honestas:** os storages compartilham o host EC2; o gateway web transfere conteúdo através do controlador (a CLI mantém transferência direta); a interface pública é um **laboratório de ensino**, não serviço comercial resistente a ataques ou falha física da instância. As operações RF1–RF12 precisam de ensaios reais para serem declaradas aprovadas.
+
 ## Arquitetura
 
 O cliente Docker (`client`) separa controle e transferência de arquivos. Ele solicita ao controlador a localização das réplicas e transmite o conteúdo diretamente aos Storage Nodes. O dashboard é uma interface de conveniência: seu upload e download passam pelo gateway HTTP do controlador.
