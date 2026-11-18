@@ -119,6 +119,7 @@
         if (label) label.hidden = true;
         $("demo-private-note").hidden = true;
         $("demo-public-note").hidden = false;
+        $("demo-expansion").hidden = false;
       }
       $("demo-panel").hidden = false;
       $("demo-nav").hidden = false;
@@ -588,6 +589,38 @@
     if(node) demoAction("/demo/nodes/" + encodeURIComponent(node) + "/undrain",
       $("demo-undrain"), {}, "Reabilitar nó drenado " + node);
   });
+  $("demo-activate-six").addEventListener("click", async () => {
+    if (!state.publicDemo) return;
+    if (!window.confirm("Ativar sexto Storage Node e iniciar seu registro automático?")) return;
+    const btn = $("demo-activate-six");
+    btn.disabled = true;
+    try {
+      const result = await api("/demo/public/nodes/activate-six", { method: "POST" });
+      demoLog("RF6: ativação do " + result.node_id + " solicitada. Aguarde o registro via heartbeat.");
+      message("RF6: novo nó ativado; aguarde o status HEALTHY no painel.", false);
+      await refresh();
+    } catch (error) { message("RF6: " + error.message, true); }
+    finally { btn.disabled = false; }
+  });
+  $("demo-encryption").addEventListener("click", async () => {
+    const path = $("demo-encryption-path").value.trim();
+    if (!/^\/demo-[A-Za-z0-9_.-]{1,100}$/.test(path)) {
+      return message("RF9: escolha um arquivo descartável /demo-*.", true);
+    }
+    const btn = $("demo-encryption");
+    try {
+      const proof = await demoRequest("/demo/files/encryption", btn, { path });
+      const okay = proof.encrypted_on_disk && proof.disk_sha256 !== proof.plaintext_sha256;
+      const summary = "RF9: " + proof.node_id + " · AES-256-GCM: " +
+        (proof.encrypted_on_disk ? "cifrado" : "não cifrado") +
+        " · SHA disco: " + proof.disk_sha256.slice(0,16) +
+        "… · SHA texto claro: " + proof.plaintext_sha256.slice(0,16) + "…";
+      $("demo-encryption-result").textContent = summary;
+      demoLog(summary);
+      message(okay ? "RF9: cifra física comprovada." : "RF9: cópia não cifrada ou evidência inconclusiva.", !okay);
+    } catch (err) { message("RF9: " + err.message, true); }
+  });
+  
   $("demo-reset").addEventListener("click", async () => {
     if (!state.publicDemo) return message("Disponível apenas no laboratório público.", true);
     if (!window.confirm("Reabilitar todos os nós de teste?")) return;
