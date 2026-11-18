@@ -30,6 +30,14 @@ def test_web_dashboard_and_assets_are_served() -> None:
     script = client.get("/ui/app.js")
     assert script.status_code == 200
     assert "/files/catalog" in script.text
+    assert 'id="upload-replicas"' in home.text
+    assert 'id="namespace-path"' in home.text
+    assert 'id="cluster-metrics"' in home.text
+    assert 'id="requirements"' in home.text
+    assert "/files/entries" in script.text
+    assert "/files/directories" in script.text
+    assert "/files/move" in script.text
+    assert "replication_factor=" in script.text
 
 
 def test_catalog_endpoint_returns_empty_list_when_no_files(tmp_path) -> None:
