@@ -3,7 +3,7 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
-  const state = { nodes: [], files: [], demoEnabled: false };
+  const state = { nodes: [], files: [], demoEnabled: false, publicDemo: false };
   const labels = { HEALTHY: "HEALTHY", SUSPECT: "SUSPECT", DEAD: "DEAD", UNDER_REPLICATED: "SUB-REPLICADO", UNAVAILABLE: "INDISPONÍVEL" };
 
   function formatBytes(value) {
@@ -76,12 +76,15 @@
   async function demoRequest(endpoint, button, body) {
     if (!window.isSecureContext) throw new Error("Abra o painel em HTTPS ou localhost via túnel SSH.");
     const token = $("demo-token").value;
-    if (!token) throw new Error("Informe o token administrativo do laboratório.");
+    if (!state.publicDemo && !token) throw new Error("Informe o token administrativo do laboratório.");
+    const publicEndpoint = state.publicDemo ? endpoint.replace("/demo/", "/demo/public/") : endpoint;
     button.disabled = true;
     try {
-      return await api(endpoint, {
+      return await api(publicEndpoint, {
         method: "POST",
-        headers: { "X-Demo-Token": token, "Content-Type": "application/json" },
+        headers: state.publicDemo
+          ? { "Content-Type": "application/json" }
+          : { "X-Demo-Token": token, "Content-Type": "application/json" },
         body: JSON.stringify(body || {})
       });
     } finally {
@@ -109,6 +112,14 @@
       const config = await api("/demo/config");
       if (!config.enabled) return;
       state.demoEnabled = true;
+      state.publicDemo = Boolean(config.public);
+      if (state.publicDemo) {
+        $("demo-token").hidden = true;
+        const label = document.querySelector('label[for="demo-token"]');
+        if (label) label.hidden = true;
+        $("demo-private-note").hidden = true;
+        $("demo-public-note").hidden = false;
+      }
       $("demo-panel").hidden = false;
       $("demo-nav").hidden = false;
       if (!window.isSecureContext) {
@@ -577,9 +588,19 @@
     if(node) demoAction("/demo/nodes/" + encodeURIComponent(node) + "/undrain",
       $("demo-undrain"), {}, "Reabilitar nó drenado " + node);
   });
+  $("demo-reset").addEventListener("click", async () => {
+    if (!state.publicDemo) return message("Disponível apenas no laboratório público.", true);
+    if (!window.confirm("Reabilitar todos os nós de teste?")) return;
+    try {
+      const out = await api("/demo/public/reset", { method: "POST" });
+      demoLog("Reabilitação: " + out.total + " nó(s) receberam comando de restauração");
+      await refresh();
+    } catch (err) { message("Reabilitação: " + err.message, true); }
+  });
+
   $("demo-concurrency").addEventListener("click", async () => {
-    if(!state.demoEnabled || !window.isSecureContext || !$("demo-token").value) {
-      return message("Modo de demonstração exige localhost/HTTPS e token administrativo.", true);
+    if(!state.demoEnabled || !window.isSecureContext || (!state.publicDemo && !$("demo-token").value)) {
+      return message("A demonstração exige HTTPS e laboratório habilitado.", true);
     }
     if(!window.confirm("Executar duas gravações simultâneas em /demo-concorrencia.txt?")) return;
     const btn=$("demo-concurrency"), path="/demo-concorrencia.txt";
