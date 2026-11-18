@@ -113,7 +113,7 @@
       $("demo-nav").hidden = false;
       if (!window.isSecureContext) {
         $("demo-security").hidden = false;
-        for (const id of ["demo-fail", "demo-restore", "demo-corrupt"]) $(id).disabled = true;
+        for (const id of ["demo-fail", "demo-restore", "demo-corrupt", "demo-drain", "demo-undrain", "demo-concurrency"]) $(id).disabled = true;
       }
       updateDemoNodeOptions();
       demoLog("Modo de demonstração ativo. Use apenas arquivos /demo-*.");
@@ -296,6 +296,7 @@
       state.nodes = results[0].value.nodes || [];
       if (state.demoEnabled) {
         for (const node of state.nodes) {
+          if (!previous.has(node.node_id) && previous.size > 0) demoLog("Novo Storage Node descoberto: " + node.node_id);
           if (previous.has(node.node_id) && previous.get(node.node_id) !== node.state) {
             demoLog(node.node_id + ": " + previous.get(node.node_id) + " → " + node.state);
           }
@@ -344,9 +345,11 @@
       grid.replaceChildren(
         metaItem("Estado", labels[info.status] || info.status),
         metaItem("Versão", info.version),
+        metaItem("Criado em", info.created_at ? new Date(info.created_at).toLocaleString("pt-BR") : "—"),
         metaItem("Tamanho", formatBytes(info.size_bytes)),
         metaItem("Replicação", info.replicas.length + " / " + info.replication_factor),
-        metaItem("SHA-256", info.sha256)
+        metaItem("SHA-256", info.sha256),
+        metaItem("ID físico da versão", info.version_id || "—")
       );
       const replicas = $("detail-replicas");
       replicas.replaceChildren();
@@ -463,6 +466,50 @@
     }
     demoAction("/demo/files/corrupt", $("demo-corrupt"), { path },
       "Corromper uma réplica de " + path + " e executar scrubbing");
+  });
+
+
+  $("demo-drain").addEventListener("click", () => {
+    const node = $("demo-node").value;
+    if(node) demoAction("/demo/nodes/" + encodeURIComponent(node) + "/drain",
+      $("demo-drain"), {}, "Drenagem planejada (RF7) de " + node);
+  });
+  $("demo-undrain").addEventListener("click", () => {
+    const node = $("demo-node").value;
+    if(node) demoAction("/demo/nodes/" + encodeURIComponent(node) + "/undrain",
+      $("demo-undrain"), {}, "Reabilitar nó drenado " + node);
+  });
+  $("demo-concurrency").addEventListener("click", async () => {
+    if(!state.demoEnabled || !window.isSecureContext || !$("demo-token").value) {
+      return message("Modo de demonstração exige localhost/HTTPS e token administrativo.", true);
+    }
+    if(!window.confirm("Executar duas gravações simultâneas em /demo-concorrencia.txt?")) return;
+    const btn=$("demo-concurrency"), path="/demo-concorrencia.txt";
+    const url="/files/content?path="+encodeURIComponent(path)+"&replication_factor=3";
+    btn.disabled=true;
+    try {
+      const payloads=[
+        new TextEncoder().encode("Escrita A, teste RF8, " + Date.now()),
+        new TextEncoder().encode("Escrita B, teste RF8, " + Date.now())
+      ];
+      const requests=payloads.map(data=>fetch(url,{
+        method:"PUT",headers:{"Content-Type":"application/octet-stream"},body:data
+      }));
+      const responses=await Promise.all(requests);
+      demoLog("RF8: duas escritas simultâneas: HTTP " + responses.map(r=>r.status).join(" e "));
+      if(!responses.some(r=>r.status===201)) throw new Error("Nenhuma gravação confirmada");
+      const info=await api("/files/metadata?path="+encodeURIComponent(path));
+      const reply=await fetch(url.replace("replication_factor=3","replication_factor=3"),{method:"GET",cache:"no-store"});
+      if(!reply.ok) throw new Error("Download final HTTP "+reply.status);
+      const bytes=await reply.arrayBuffer();
+      const digest=await crypto.subtle.digest("SHA-256",bytes);
+      const sha=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,"0")).join("");
+      const valid=sha===info.sha256 && bytes.byteLength===Number(info.size_bytes);
+      demoLog("RF8: versão "+info.version+" íntegra="+valid+" · SHA-256="+sha.slice(0,12)+"…");
+      if(!valid) throw new Error("SHA-256 final divergente");
+      await refresh();
+    }catch(err){demoLog("RF8 ERRO: "+err.message);message("RF8: "+err.message,true);}
+    finally{btn.disabled=false;}
   });
 
   refresh();
