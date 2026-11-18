@@ -12,11 +12,12 @@ Responsabilidades:
 import asyncio
 from contextlib import asynccontextmanager
 import logging
+import hmac
 import os
 import re
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import FastAPI, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 import httpx
 
@@ -101,6 +102,11 @@ async def report_forever() -> None:
     reconciled = False
     async with httpx.AsyncClient(timeout=3) as client:
         while True:
+            if DEMO_PAUSED:
+                registered = False
+                reconciled = False
+                await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+                continue
             try:
                 if not registered:
                     response = await client.post(
@@ -197,6 +203,8 @@ async def scrub_forever() -> None:
     while True:
         try:
             await asyncio.sleep(SCRUB_INTERVAL_SECONDS)
+            if DEMO_PAUSED:
+                continue
             logger.info("scrub_periodic_trigger node=%s", NODE_ID)
             report = await store.scrub()
             await notify_corrupted_replicas(report)
@@ -225,6 +233,54 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=f"DComp Storage {NODE_ID}", version="0.2.0", lifespan=lifespan)
+
+# Falha lógica: bloqueia tráfego do nó e suspende heartbeats. Nunca para Docker.
+# Somente em ambiente de laboratório isolado, desativado por padrão.
+DEMO_PAUSED = False
+
+
+def _require_demo_admin(x_demo_token: str | None = Header(default=None)) -> None:
+    if os.getenv("DEMO_MODE", "false").lower() != "true":
+        raise HTTPException(404, "Modo de demonstração desativado")
+    secret = os.getenv("DEMO_ADMIN_TOKEN", "")
+    if len(secret) < 32:
+        raise HTTPException(503, "Token de demonstração não configurado")
+    if x_demo_token is None or not hmac.compare_digest(x_demo_token, secret):
+        raise HTTPException(403, "Token administrativo inválido")
+
+
+@app.middleware("http")
+async def demo_node_outage(request: Request, call_next):
+    if DEMO_PAUSED and not request.url.path.startswith("/_demo/"):
+        return JSONResponse(status_code=503, content={"detail": "Storage temporariamente indisponível (demonstração)"})
+    return await call_next(request)
+
+
+@app.post("/_demo/offline")
+def demo_offline(_: None = Depends(_require_demo_admin)) -> dict:
+    global DEMO_PAUSED
+    DEMO_PAUSED = True
+    logger.warning("demo_node_failure_injected node=%s", NODE_ID)
+    return {"node_id": NODE_ID, "paused": True}
+
+
+@app.post("/_demo/restore")
+def demo_restore(_: None = Depends(_require_demo_admin)) -> dict:
+    global DEMO_PAUSED
+    DEMO_PAUSED = False
+    logger.info("demo_node_restored node=%s", NODE_ID)
+    return {"node_id": NODE_ID, "paused": False}
+
+
+@app.post("/_demo/corrupt/{object_id}")
+async def demo_corrupt(object_id: str, _: None = Depends(_require_demo_admin)) -> dict:
+    if DEMO_PAUSED:
+        raise HTTPException(409, "Restaure o nó antes de corromper objeto")
+    store.corrupt_for_testing(object_id)
+    report = await store.scrub(specific_object_id=object_id)
+    await notify_corrupted_replicas(report)
+    return {"object_id": object_id, "corrupted_ids": report.corrupted_ids}
+
 
 
 @app.exception_handler(ObjectNotFoundError)
