@@ -46,7 +46,7 @@ Esta versão inclui uma **stack pública descartável** separada do cluster priv
 
 - `docker-compose.yml`: projeto original privado, com seus próprios arquivos e volumes (controlador em `127.0.0.1:8000`).
 - `docker-compose.public.yml`: projeto `dcomp-public`, PostgreSQL e volumes **independentes**, com controlador em `127.0.0.1:18001`. Cinco storages ativos e um sexto em espera para ensaio de descoberta automática.
-- `deploy/nginx-dcomp-public.conf`: proxy HTTPS no Elastic IP com allowlist de operações de navegador. O controlador privado e as APIs de administração não são publicados.
+- `controller/public_gateway.py`: entrada HTTPS diretamente no Uvicorn da EC2 (porta 443), com allowlist de operações de navegador e limite de requisições. Sem Nginx, ngrok ou token para visitante. Controlador privado e APIs administrativas não são publicados.
 - `scripts/init_public_lab.py`: gera credenciais internas, senha do banco e chave AES-256-GCM, sem imprimi-las.
 - `controller/web/`: explorador RF1, fator N (RF3), SHA-256, falha lógica, re-replicação, sexto nó (RF6), drain (RF7), concorrência (RF8), evidência de cifra física (RF9), reinício real apenas do controlador descartável (RF10), estado (RF11) e eventos sanitizados (RF12).
 
