@@ -76,7 +76,7 @@ def test_demo_controls_fail_closed_by_default(monkeypatch) -> None:
     monkeypatch.setenv("DEMO_MODE", "false")
     monkeypatch.delenv("DEMO_ADMIN_TOKEN", raising=False)
     client = TestClient(app)
-    assert client.get("/demo/config").json() == {"enabled": False, "public": False}
+    assert client.get("/demo/config").json() == {"enabled": False, "public": False, "max_upload_bytes": 33554432}
     assert client.post("/demo/nodes/storage-1/offline").status_code == 404
     assert client.post("/demo/files/corrupt", json={"path": "/demo-test.txt"}).status_code == 404
 
@@ -85,7 +85,7 @@ def test_demo_requires_valid_token_and_restricts_corruption(monkeypatch) -> None
     monkeypatch.setenv("DEMO_MODE", "true")
     monkeypatch.setenv("DEMO_ADMIN_TOKEN", "a" * 40)
     client = TestClient(app)
-    assert client.get("/demo/config").json() == {"enabled": True, "public": False}
+    assert client.get("/demo/config").json() == {"enabled": True, "public": False, "max_upload_bytes": 33554432}
     assert client.post("/demo/nodes/storage-1/offline").status_code == 403
     headers = {"X-Demo-Token": "a" * 40}
     assert client.post(
@@ -132,7 +132,7 @@ def test_public_demo_requires_explicit_isolation(monkeypatch):
     assert error.value.status_code == 404
 
     monkeypatch.setenv("PUBLIC_DEMO_ISOLATED", "true")
-    assert demo_config() == {"enabled": True, "public": True}
+    assert demo_config()["enabled"] is True and demo_config()["public"] is True
     require_public_demo()
 
 
