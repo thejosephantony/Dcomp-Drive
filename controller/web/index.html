@@ -247,6 +247,8 @@
               <div class="demo-actions">
                 <button id="demo-fail" type="button" class="button">Simular falha lógica</button>
                 <button id="demo-restore" type="button" class="button">Restaurar nó</button>
+                <button id="demo-drain" type="button" class="button">Drenar nó (RF7)</button>
+                <button id="demo-undrain" type="button" class="button">Reabilitar nó</button>
               </div>
             </div>
             <div class="demo-column">
@@ -257,6 +259,13 @@
               <div class="demo-actions">
                 <button id="demo-corrupt" type="button" class="button">Corromper 1 réplica e verificar</button>
               </div>
+            </div>
+          </div>
+          <div class="demo-column">
+            <h3>3. Concorrência (RF8)</h3>
+            <p>Duas gravações simultâneas no mesmo caminho descartável. O relatório mostra os códigos HTTP, a versão publicada e sua integridade.</p>
+            <div class="demo-actions">
+              <button id="demo-concurrency" type="button" class="button">Executar concorrência controlada</button>
             </div>
           </div>
           <h3>Registro da apresentação</h3>
