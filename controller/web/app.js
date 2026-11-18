@@ -123,55 +123,149 @@
   }
 
 
+  function validEntryName(name) {
+    return Boolean(name) && name.trim() === name && name !== "." && name !== ".." &&
+      !name.includes("/") && !name.includes("\\") && !name.includes("\u0000");
+  }
+
+  function parentOf(path) {
+    return path.slice(0, path.lastIndexOf("/")) || "/";
+  }
+
+  function joinPath(parent, name) {
+    return (parent === "/" ? "" : parent) + "/" + name;
+  }
+
+  function actionButton(text, handler) {
+    const button = el("button", "button mini-button", text);
+    button.type = "button";
+    button.addEventListener("click", handler);
+    return button;
+  }
+
   async function listDirectory(target) {
-    const path = target || $("namespace-path").value.trim();
+    const path = (target || $("namespace-path").value).trim();
+    if (!path.startsWith("/")) throw new Error("Use um caminho absoluto, por exemplo /documentos.");
     const entries = await api("/files/entries?path=" + encodeURIComponent(path));
     $("namespace-path").value = path;
-    const body = $("namespace-rows"); body.replaceChildren();
+    $("namespace-remove").disabled = path === "/";
+    const body = $("namespace-rows");
+    body.replaceChildren();
+
     if (!entries.length) {
-      const tr = el("tr"); const td = addCell(tr, "Diretório vazio", "empty"); td.colSpan = 4; body.append(tr);
+      const tr = el("tr");
+      const td = addCell(tr, "Diretório vazio", "empty");
+      td.colSpan = 5;
+      body.append(tr);
     }
-    for(const entry of entries) {
-      const tr = el("tr"), fullPath = (path === "/" ? "" : path) + "/" + entry.name;
-      const btn = el("button", "button mini-button", entry.name);
-      btn.type = "button";
-      btn.addEventListener("click", () => entry.kind === "dir"
-        ? listDirectory(fullPath).catch(e=>message(e.message,true)) : showDetails(fullPath));
-      addCell(tr,btn); addCell(tr,entry.kind === "dir" ? "Diretório" : "Arquivo");
-      addCell(tr,formatBytes(entry.size)); addCell(tr,entry.state || "—"); body.append(tr);
+
+    for (const entry of entries) {
+      const tr = el("tr");
+      const fullPath = joinPath(path, entry.name);
+      addCell(tr, entry.name);
+      addCell(tr, entry.kind === "dir" ? "Diretório" : "Arquivo");
+      addCell(tr, entry.kind === "dir" ? "—" : formatBytes(entry.size));
+      addCell(tr, entry.state || "—");
+      const actionsCell = addCell(tr, el("div", "file-actions"));
+      const actions = actionsCell.firstElementChild;
+      if (entry.kind === "dir") {
+        actions.append(actionButton("Abrir", () =>
+          listDirectory(fullPath).catch(err => message("Diretório: " + err.message, true))));
+        actions.append(actionButton("Excluir pasta", () => removeDirectory(fullPath)));
+      } else {
+        actions.append(
+          actionButton("Detalhes", () => showDetails(fullPath)),
+          actionButton("Baixar", event => downloadFile(fullPath, event.currentTarget)),
+          actionButton("Renomear", () => renameFile(fullPath)),
+          actionButton("Mover", () => moveFile(fullPath)),
+          actionButton("Excluir", () => deleteFile(fullPath))
+        );
+      }
+      body.append(tr);
     }
-    $("namespace-notice").textContent = path + " · " + entries.length + " entradas";
+
+    $("namespace-notice").textContent = "Pasta " + path + " · " + entries.length + " item(ns)";
+  }
+
+  async function removeDirectory(path) {
+    if (path === "/") return message("O diretório raiz não pode ser removido.", true);
+    if (!window.confirm("Remover pasta vazia?\n" + path)) return;
+    try {
+      await api("/files/directories?path=" + encodeURIComponent(path), { method: "DELETE" });
+      message("Diretório removido: " + path, false);
+      await listDirectory(parentOf(path));
+    } catch (err) {
+      message("Remover pasta: " + err.message, true);
+    }
   }
 
   async function manageDirectory(create) {
-    const path = $("namespace-path").value.trim();
-    if (!path.startsWith("/") || path === "/") return message("Informe caminho absoluto diferente de /.",true);
-    if (!create && !window.confirm("Remover diretório vazio? " + path)) return;
+    const current = $("namespace-path").value.trim();
+    if (!current.startsWith("/")) return message("Informe o diretório atual.", true);
+    if (!create) return removeDirectory(current);
+    const name = $("namespace-new-name").value;
+    if (!validEntryName(name)) return message("Nome inválido. Informe apenas o nome da nova pasta, sem barras.", true);
+    const path = joinPath(current, name);
     try {
-      await api(create ? "/files/directories" : "/files/directories?path=" + encodeURIComponent(path),
-        create ? {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path})} : {method:"DELETE"});
-      message((create ? "Diretório criado: " : "Diretório removido: ") + path,false);
-      await listDirectory(path.slice(0,path.lastIndexOf("/")) || "/");
-    } catch(e) { message("Diretório: "+e.message,true); }
+      await api("/files/directories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path })
+      });
+      $("namespace-new-name").value = "";
+      message("Diretório criado: " + path, false);
+      await listDirectory(current);
+    } catch (err) {
+      message("Criar pasta: " + err.message, true);
+    }
   }
 
-  async function moveFile(path) {
-    const dst=window.prompt("Novo caminho absoluto para " + path + ":",path);
-    if(!dst || dst === path) return;
+  async function changeFilePath(src, dst, action) {
+    if (!dst.startsWith("/") || dst === "/") return message("Caminho absoluto obrigatório.", true);
+    if (src === dst) return message("O destino é igual à origem.", true);
     try {
-      await api("/files/move",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({src:path,dst:dst.trim()})});
-      message("Arquivo movido para "+dst,false); await refresh();
-      await listDirectory($("namespace-path").value).catch(()=>{});
-    } catch(e) {message("Mover: "+e.message,true);}
+      await api("/files/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ src, dst })
+      });
+      message(action + ": " + src + " → " + dst, false);
+      await refresh();
+      await listDirectory($("namespace-path").value).catch(() => {});
+    } catch (err) {
+      message(action + ": " + err.message, true);
+    }
+  }
+
+  async function renameFile(src) {
+    const parent = parentOf(src);
+    const oldName = src.slice(src.lastIndexOf("/") + 1);
+    const newName = window.prompt("Novo nome do arquivo (sem /):", oldName);
+    if (newName === null || newName === oldName) return;
+    if (!validEntryName(newName)) return message("Nome inválido. Use um nome sem barras.", true);
+    return changeFilePath(src, joinPath(parent, newName), "Renomear");
+  }
+
+  async function moveFile(src) {
+    const dst = window.prompt(
+      "Caminho completo do arquivo no destino (a pasta precisa existir).\nEx.: /trabalhos/arquivo.txt",
+      src
+    );
+    if (dst === null || dst === src) return;
+    return changeFilePath(src, dst.trim(), "Mover");
   }
 
   async function deleteFile(path) {
-    if(!window.confirm("Excluir arquivo e réplicas?\n"+path))return;
+    if (!window.confirm("Excluir permanentemente o arquivo e suas réplicas?\n" + path)) return;
     try {
-      const res=await api("/files/entry?path="+encodeURIComponent(path),{method:"DELETE"});
-      message("Arquivo removido: "+path+(res.pending_cleanup?" (limpeza física pendente)":""),false);
-      await refresh(); await listDirectory($("namespace-path").value).catch(()=>{});
-    } catch(e) {message("Excluir: "+e.message,true);}
+      const result = await api("/files/entry?path=" + encodeURIComponent(path), { method: "DELETE" });
+      message("Arquivo excluído: " + path +
+        (result.pending_cleanup ? " · limpeza física pendente em " + result.pending_cleanup + " storage(s)." : ""), false);
+      await refresh();
+      await listDirectory($("namespace-path").value).catch(() => {});
+    } catch (err) {
+      message("Excluir arquivo: " + err.message, true);
+    }
   }
 
   function renderCapacity() {
@@ -266,11 +360,11 @@
       const downloadButton = el("button", "button mini-button", "Baixar");
       downloadButton.type = "button";
       downloadButton.addEventListener("click", () => downloadFile(file.path, downloadButton));
-      const mover=el("button","button mini-button","Mover");
-      mover.type="button";mover.addEventListener("click",()=>moveFile(file.path));
-      const excluir=el("button","button mini-button","Excluir");
-      excluir.type="button";excluir.addEventListener("click",()=>deleteFile(file.path));
-      actions.append(detailButton,downloadButton,mover,excluir);
+      const renameButton = actionButton("Renomear", () => renameFile(file.path));
+      const moveButton = actionButton("Mover", () => moveFile(file.path));
+      const deleteButton = actionButton("Excluir", () => deleteFile(file.path));
+      actions.className = "file-actions";
+      actions.append(detailButton, downloadButton, renameButton, moveButton, deleteButton);
       body.append(row);
     }
   }
@@ -431,6 +525,9 @@
 
   $("namespace-list").addEventListener("click",()=>{
     listDirectory().catch(e=>message("Listagem: "+e.message,true));
+  });
+  $("namespace-up").addEventListener("click", () => {
+    listDirectory(parentOf($("namespace-path").value.trim())).catch(err => message(err.message, true));
   });
   $("namespace-create").addEventListener("click",()=>manageDirectory(true));
   $("namespace-remove").addEventListener("click",()=>manageDirectory(false));
