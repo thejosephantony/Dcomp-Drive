@@ -1,0 +1,116 @@
+"""Controles autenticados para demonstrações em laboratório isolado.
+
+Não expor em uma API pública sem autenticação de usuários. A simulação de falha
+bloqueia operações no Storage Node e suspende heartbeats, sem usar Docker socket.
+"""
+import hmac
+import os
+import re
+
+import httpx
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from controller.database import get_session
+from controller.file_api import metadata
+from controller.file_transfer import _storage_url
+from controller.models import Node
+
+router = APIRouter(prefix="/demo", tags=["Demonstração de laboratório"])
+
+
+def _enabled() -> bool:
+    return os.getenv("DEMO_MODE", "false").lower() == "true"
+
+
+def _secret() -> str:
+    return os.getenv("DEMO_ADMIN_TOKEN", "")
+
+
+def require_demo_admin(x_demo_token: str | None = Header(default=None)) -> None:
+    if not _enabled():
+        raise HTTPException(404, "Modo de demonstração desativado")
+    secret = _secret()
+    if len(secret) < 32:
+        raise HTTPException(503, "DEMO_ADMIN_TOKEN não configurado com segurança")
+    if x_demo_token is None or not hmac.compare_digest(x_demo_token, secret):
+        raise HTTPException(403, "Token administrativo inválido")
+
+
+@router.get("/config")
+def demo_config() -> dict[str, bool]:
+    """Não expõe o segredo e não habilita operações por si só."""
+    return {"enabled": _enabled() and len(_secret()) >= 32}
+
+
+def _require_node(session: Session, node_id: str) -> Node:
+    if not re.fullmatch(r"storage-[1-5]", node_id):
+        raise HTTPException(422, "Selecione um storage do laboratório")
+    node = session.get(Node, node_id)
+    if node is None:
+        raise HTTPException(404, "Storage não registrado")
+    return node
+
+
+async def _send(node: Node, suffix: str, secret: str) -> dict:
+    try:
+        base = _storage_url(node.address)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                base + suffix,
+                headers={"X-Demo-Token": secret},
+            )
+        response.raise_for_status()
+        return response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(502, f"Falha ao acionar storage: {type(exc).__name__}") from exc
+
+
+@router.post("/nodes/{node_id}/offline")
+async def simulate_node_failure(
+    node_id: str,
+    _: None = Depends(require_demo_admin),
+    session: Session = Depends(get_session),
+) -> dict:
+    node = _require_node(session, node_id)
+    healthy = session.query(Node).filter(Node.state == "HEALTHY").count()
+    if node.state != "HEALTHY" or healthy < 5:
+        raise HTTPException(409, "O laboratório deve ter cinco nós saudáveis antes da falha")
+    result = await _send(node, "/_demo/offline", _secret())
+    return {"action": "offline", "kind": "falha lógica controlada", **result}
+
+
+@router.post("/nodes/{node_id}/restore")
+async def restore_node(
+    node_id: str,
+    _: None = Depends(require_demo_admin),
+    session: Session = Depends(get_session),
+) -> dict:
+    node = _require_node(session, node_id)
+    result = await _send(node, "/_demo/restore", _secret())
+    return {"action": "restore", **result}
+
+
+class CorruptDemoRequest(BaseModel):
+    path: str
+
+
+@router.post("/files/corrupt")
+async def corrupt_demo_replica(
+    request: CorruptDemoRequest,
+    _: None = Depends(require_demo_admin),
+    session: Session = Depends(get_session),
+) -> dict:
+    # Impede alterar objetos reais: exclusivamente nomes novos de demonstração.
+    if not re.fullmatch(r"/demo-[A-Za-z0-9_.-]{1,100}", request.path):
+        raise HTTPException(422, "Só é permitido corromper /demo-* descartável")
+    healthy_nodes = session.query(Node).filter(Node.state == "HEALTHY").count()
+    if healthy_nodes < 5:
+        raise HTTPException(409, "Restabeleça os cinco storages antes do teste de corrupção")
+    info = metadata(path=request.path, session=session)
+    if info.status != "HEALTHY" or len(info.replicas) < 3 or not info.version_id:
+        raise HTTPException(409, "O arquivo deve possuir ao menos três réplicas saudáveis")
+    node = _require_node(session, info.replicas[0].node_id)
+    result = await _send(node, "/_demo/corrupt/" + info.version_id, _secret())
+    return {"action": "corruption", "path": request.path, "node_id": node.node_id, **result}
