@@ -30,6 +30,7 @@ services:
       REPLICATION_FACTOR: ${REPLICATION_FACTOR:-3}
       WRITE_TIMEOUT_SECONDS: ${WRITE_TIMEOUT_SECONDS:-300}
       MAX_TRANSFER_BYTES: ${PUBLIC_MAX_TRANSFER_BYTES:-1048576}
+      ENCRYPTION_ENABLED: "${ENCRYPTION_ENABLED:-true}"
       PUBLIC_DEMO_MODE: "true"
       PUBLIC_DEMO_ISOLATED: "true"
       PUBLIC_DEMO_MAX_FILES: ${PUBLIC_DEMO_MAX_FILES:-100}
@@ -119,6 +120,18 @@ services:
       STORAGE_ADDRESS: http://storage-5:9000
     volumes: [storage5_data:/data]
 
+  # Sexto nó de expansão RF6. Inicia em standby e entra no cluster
+  # após a ação pública de ativação, sem reiniciar o controlador.
+  storage-6:
+    <<: *storage
+    environment:
+      <<: *storage_env
+      NODE_ID: storage-6
+      MACHINE_ID: storage-6
+      STORAGE_ADDRESS: http://storage-6:9000
+      DEMO_STANDBY: "true"
+    volumes: [storage6_data:/data]
+
 volumes:
   postgres_data:
   storage1_data:
@@ -126,3 +139,4 @@ volumes:
   storage3_data:
   storage4_data:
   storage5_data:
+  storage6_data:
