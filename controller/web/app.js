@@ -499,7 +499,7 @@
       demoLog("RF8: duas escritas simultâneas: HTTP " + responses.map(r=>r.status).join(" e "));
       if(!responses.some(r=>r.status===201)) throw new Error("Nenhuma gravação confirmada");
       const info=await api("/files/metadata?path="+encodeURIComponent(path));
-      const reply=await fetch(url.replace("replication_factor=3","replication_factor=3"),{method:"GET",cache:"no-store"});
+      const reply=await fetch("/files/content?path=" + encodeURIComponent(path),{method:"GET",cache:"no-store"});
       if(!reply.ok) throw new Error("Download final HTTP "+reply.status);
       const bytes=await reply.arrayBuffer();
       const digest=await crypto.subtle.digest("SHA-256",bytes);
