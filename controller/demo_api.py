@@ -68,7 +68,7 @@ def require_public_demo() -> None:
 
 
 def _require_node(session: Session, node_id: str) -> Node:
-    if not re.fullmatch(r"storage-[1-5]", node_id):
+    if not re.fullmatch(r"storage-[1-6]", node_id):
         raise HTTPException(422, "Selecione um storage do laboratório")
     node = session.get(Node, node_id)
     if node is None:
@@ -225,7 +225,7 @@ async def public_reset(
 ) -> dict:
     """Reabilita os cinco nós do laboratório (nunca apaga arquivos)."""
     results: list[str] = []
-    for node_id in ("storage-1", "storage-2", "storage-3", "storage-4", "storage-5"):
+    for node_id in ("storage-1", "storage-2", "storage-3", "storage-4", "storage-5", "storage-6"):
         node = session.get(Node, node_id)
         if node is None:
             continue
