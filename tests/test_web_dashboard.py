@@ -32,6 +32,13 @@ def test_web_dashboard_and_assets_are_served() -> None:
     assert "/files/catalog" in script.text
     assert 'id="upload-replicas"' in home.text
     assert 'id="namespace-path"' in home.text
+    assert 'id="namespace-new-name"' in home.text
+    assert 'id="namespace-up"' in home.text
+    assert 'id="namespace-create"' in home.text
+    assert 'id="namespace-remove"' in home.text
+    assert "Renomear" in script.text
+    assert "Mover" in script.text
+    assert "Excluir" in script.text
     assert 'id="cluster-metrics"' in home.text
     assert 'id="requirements"' in home.text
     assert "/files/entries" in script.text
