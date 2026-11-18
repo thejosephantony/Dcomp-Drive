@@ -4,8 +4,16 @@ Não expor em uma API pública sem autenticação de usuários. A simulação de
 bloqueia operações no Storage Node e suspende heartbeats, sem usar Docker socket.
 """
 import hmac
+import hashlib
+import json
 import os
 import re
+import time
+import uuid
+import asyncio
+from pathlib import Path
+from sqlalchemy import select
+from controller.file_models import FileEntry, FileVersion, Directory
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -272,3 +280,58 @@ async def public_activate_sixth_node(
     standby = SimpleNamespace(address="http://storage-6:9000")
     result = await _send(standby, "/_demo/activate", _secret())
     return {"action": "activate", **result}
+
+
+# O identificador muda em cada processo (e, portanto, a cada reinicialização real).
+_RUNTIME_ID = uuid.uuid4().hex
+_RESTART_MARKER = Path("/tmp/dcomp_public_last_controller_restart")
+
+
+@router.get("/public/persistence/snapshot")
+def public_persistence_snapshot(
+    _: None = Depends(require_public_demo),
+    session: Session = Depends(get_session),
+) -> dict:
+    """RF10: impressão verificável da árvore e do catálogo persistidos em SQL."""
+    directories = sorted(session.scalars(select(Directory.path)).all())
+    rows = session.execute(
+        select(FileEntry.path, FileVersion.version, FileVersion.sha256, FileVersion.size_bytes)
+        .join(FileVersion, FileVersion.version_id == FileEntry.current_version_id)
+        .order_by(FileEntry.path)
+    ).all()
+    docs = [[p, v, h, size] for p, v, h, size in rows]
+    digest = hashlib.sha256(
+        json.dumps([directories, docs], sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return {
+        "controller_instance": _RUNTIME_ID,
+        "catalog_sha256": digest,
+        "files": len(docs),
+        "directories": len(directories),
+    }
+
+
+@router.post("/public/persistence/restart")
+async def public_persistence_restart(
+    _: None = Depends(require_public_demo),
+) -> dict:
+    """RF10: reinicia APENAS o controlador da stack pública descartável.
+
+    O Docker (restart: unless-stopped) relança o processo. PostgreSQL e volumes
+    permanecem vivos. O limite persistente inibe reinicializações contínuas.
+    """
+    if os.getenv("PUBLIC_DEMO_RESTART_ALLOWED", "false").lower() != "true":
+        raise HTTPException(404, "Ensaio de reinício desabilitado")
+    now = time.time()
+    try:
+        previous = float(_RESTART_MARKER.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        previous = 0.0
+    if now - previous < 180:
+        raise HTTPException(429, "Reinício disponível novamente após 3 minutos")
+    _RESTART_MARKER.write_text(str(now), encoding="utf-8")
+    loop = asyncio.get_running_loop()
+    # Sai com código não nulo para que o Docker reinicie o container. Não
+    # se faz isso em produção: somente no laboratório público isolado.
+    loop.call_later(1.2, lambda: os._exit(75))
+    return {"scheduled": True, "controller_instance": _RUNTIME_ID}
