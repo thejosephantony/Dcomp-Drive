@@ -270,8 +270,26 @@
               </div>
             </div>
           </div>
+          <div class="demo-column" id="demo-expansion" hidden>
+            <h3>3. Descoberta automática (RF6)</h3>
+            <p>Ative o sexto Storage Node pré-provisionado. Ele se registra automaticamente, sem reiniciar o controlador.</p>
+            <div class="demo-actions">
+              <button id="demo-activate-six" type="button" class="button">Adicionar sexto Storage Node</button>
+            </div>
+          </div>
           <div class="demo-column">
-            <h3>3. Concorrência (RF8)</h3>
+            <h3>4. Criptografia em disco (RF9)</h3>
+            <p>Comprove a cifra física AES-256-GCM de uma réplica descartável, sem revelar chaves ou conteúdo.</p>
+            <label for="demo-encryption-path" class="field-label">Arquivo descartável /demo-*</label>
+            <input id="demo-encryption-path" class="demo-input" value="/demo-corrupcao.txt" spellcheck="false">
+            <div class="demo-actions">
+              <button id="demo-encryption" type="button" class="button">Verificar cifra física</button>
+            </div>
+            <p id="demo-encryption-result" class="small-note" role="status"></p>
+          </div>
+
+          <div class="demo-column">
+            <h3>5. Concorrência (RF8)</h3>
             <p>Duas gravações simultâneas no mesmo caminho descartável. O relatório mostra os códigos HTTP, a versão publicada e sua integridade.</p>
             <div class="demo-actions">
               <button id="demo-concurrency" type="button" class="button">Executar concorrência controlada</button>
