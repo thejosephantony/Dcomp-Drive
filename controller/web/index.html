@@ -303,6 +303,17 @@
             </div>
             <p id="demo-persistence-status" class="small-note" role="status"></p>
           </div>
+          <div id="demo-structured-events" class="demo-column" hidden>
+            <h3>7. Logs estruturados (RF12)</h3>
+            <p>Eventos reais do controlador, sem credenciais nem conteúdo de arquivos. Horário, componente, evento e identificador técnico.</p>
+            <div class="demo-actions">
+              <button id="demo-refresh-events" type="button" class="button">Atualizar logs</button>
+            </div>
+            <div class="table-scroll">
+              <table class="files-table"><thead><tr><th>Horário</th><th>Componente</th><th>Evento</th><th>Referência</th></tr></thead>
+              <tbody id="demo-events-table"><tr><td colspan="4" class="empty">Ainda sem eventos.</td></tr></tbody></table>
+            </div>
+          </div>
           <h3>Registro da apresentação</h3>
           <ol id="demo-events" class="demo-events" aria-live="polite"><li>Aguardando eventos...</li></ol>
         </section>
