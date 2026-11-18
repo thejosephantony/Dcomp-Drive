@@ -4,12 +4,13 @@ O rename é exclusivamente de metadados. Exclusões removem primeiro a entrada
 lógica; a limpeza das cópias físicas é best effort, com falhas registradas.
 """
 import logging
+import os
 from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -104,6 +105,13 @@ def make_directory(
         raise HTTPException(409, detail="um arquivo já ocupa o caminho")
     if session.get(Directory, _parent(path)) is None:
         raise HTTPException(404, detail="diretório pai não existe")
+    if os.getenv("PUBLIC_DEMO_MODE", "false").lower() == "true":
+        if os.getenv("PUBLIC_DEMO_ISOLATED", "false").lower() != "true":
+            raise HTTPException(503, "Namespace público exige stack isolada")
+        limit = int(os.getenv("PUBLIC_DEMO_MAX_DIRECTORIES", "100"))
+        count = session.scalar(select(func.count(Directory.path))) or 0
+        if count >= limit:
+            raise HTTPException(507, "Laboratório atingiu limite de diretórios")
     session.add(Directory(path=path))
     try:
         session.commit()
