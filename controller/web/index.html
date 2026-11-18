@@ -295,6 +295,14 @@
               <button id="demo-concurrency" type="button" class="button">Executar concorrência controlada</button>
             </div>
           </div>
+          <div id="demo-persistence" class="demo-column" hidden>
+            <h3>6. Persistência real (RF10)</h3>
+            <p>Grava o resumo do catálogo no navegador, reinicia somente o controller de laboratório, aguarda o retorno e compara o SHA-256 do catálogo persistido no PostgreSQL. Limite de um reinício a cada 3 minutos.</p>
+            <div class="demo-actions">
+              <button id="demo-persistence-run" type="button" class="button">Reiniciar controller e validar metadados</button>
+            </div>
+            <p id="demo-persistence-status" class="small-note" role="status"></p>
+          </div>
           <h3>Registro da apresentação</h3>
           <ol id="demo-events" class="demo-events" aria-live="polite"><li>Aguardando eventos...</li></ol>
         </section>
