@@ -335,3 +335,13 @@ async def public_persistence_restart(
     # se faz isso em produção: somente no laboratório público isolado.
     loop.call_later(1.2, lambda: os._exit(75))
     return {"scheduled": True, "controller_instance": _RUNTIME_ID}
+
+
+
+@router.get("/public/events")
+def public_structured_events(
+    _: None = Depends(require_public_demo),
+) -> dict:
+    """RF12: somente eventos selecionados e sanitizados da memória do controller."""
+    from controller.logging_config import public_events_snapshot
+    return {"events": public_events_snapshot(50)}
