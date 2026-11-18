@@ -480,6 +480,48 @@ def test_rf1_namespace_full_lifecycle(cluster):
     assert client.get("/files/entries", params={"path": "/"}).json() == []
 
 
+
+def test_rf1_rename_and_move_preserve_content_hash_and_three_replicas(cluster):
+    """Botões Renomear e Mover da web usam o contrato /files/move."""
+    client, fake, _ = cluster
+    assert client.post("/files/directories", json={"path": "/pasta1"}).status_code == 201
+    assert client.post("/files/directories", json={"path": "/pasta2"}).status_code == 201
+    data = b"RF1 teste renomear e mover"
+    sent = client.put("/files/content", params={"path": "/pasta1/original.txt"}, content=data)
+    assert sent.status_code == 201, sent.text
+    original_sha = sent.json()["sha256"]
+
+    # Renomear: modificar o basename sem sair do mesmo diretório.
+    rename = client.post("/files/move", json={
+        "src": "/pasta1/original.txt", "dst": "/pasta1/renomeado.txt"
+    })
+    assert rename.status_code == 200, rename.text
+    assert client.get("/files/metadata", params={"path": "/pasta1/original.txt"}).status_code == 404
+
+    # Mover: manter o nome e mudar de diretório.
+    move = client.post("/files/move", json={
+        "src": "/pasta1/renomeado.txt", "dst": "/pasta2/renomeado.txt"
+    })
+    assert move.status_code == 200, move.text
+    info = client.get("/files/metadata", params={"path": "/pasta2/renomeado.txt"})
+    assert info.status_code == 200, info.text
+    assert info.json()["sha256"] == original_sha
+    assert info.json()["status"] == "HEALTHY"
+    assert len(info.json()["replicas"]) == 3
+    response = client.get("/files/content", params={"path": "/pasta2/renomeado.txt"})
+    assert response.status_code == 200, response.text
+    assert response.content == data
+    assert response.headers["X-Sha256"] == original_sha
+    assert len(fake.objects) == 3
+
+    assert client.get("/files/entries", params={"path": "/pasta1"}).json() == []
+    assert [x["name"] for x in client.get("/files/entries", params={"path": "/pasta2"}).json()] == ["renomeado.txt"]
+    assert client.delete("/files/directories", params={"path": "/pasta2"}).status_code == 409
+    assert client.delete("/files/entry", params={"path": "/pasta2/renomeado.txt"}).status_code == 200
+    assert client.delete("/files/directories", params={"path": "/pasta2"}).status_code == 200
+    assert client.delete("/files/directories", params={"path": "/pasta1"}).status_code == 200
+
+
 def test_rf1_namespace_validates_paths_and_nonempty_dirs(cluster):
     client, _fake, _factory = cluster
     assert client.delete("/files/directories", params={"path": "/"}).status_code == 409
