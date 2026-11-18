@@ -21,6 +21,7 @@
         <a href="#overview" class="nav-link active"><span aria-hidden="true">◈</span> Visão geral</a>
         <a href="#files" class="nav-link"><span aria-hidden="true">▤</span> Arquivos</a>
         <a href="#nodes" class="nav-link"><span aria-hidden="true">▦</span> Storage Nodes</a>
+        <a id="demo-nav" href="#demo-panel" class="nav-link" hidden><span aria-hidden="true">⚙</span> Demonstração</a>
       </nav>
       <div class="sidebar-bottom">
         <span class="side-label">AMBIENTE</span>
@@ -145,6 +146,45 @@
         <div id="nodes-grid" class="nodes-grid">
           <div class="panel empty-nodes">Carregando estado dos nós...</div>
         </div>
+
+
+        <section id="demo-panel" class="panel demo-panel" aria-labelledby="demo-title" hidden>
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">APRESENTAÇÃO ACADÊMICA</div>
+              <h2 id="demo-title">Modo de demonstração</h2>
+              <p>Falhas lógicas reais, recuperação automática e corrupção de uma única réplica de teste.</p>
+            </div>
+            <span class="health-badge is-waiting">Acesso administrativo</span>
+          </div>
+          <p class="small-note">Use apenas em laboratório isolado. O token permanece somente nesta página e não é salvo no navegador. Para executar ações, acesse por HTTPS ou localhost via SSH.</p>
+          <label class="field-label" for="demo-token">Token administrativo</label>
+          <input id="demo-token" class="demo-input" type="password" autocomplete="off" placeholder="Cole o token privado do laboratório">
+          <p id="demo-security" class="small-note" hidden>Este endereço não é seguro. Abra o dashboard via HTTPS ou http://localhost:8000/ por SSH.</p>
+          <div class="demo-grid">
+            <div class="demo-column">
+              <h3>1. Falha e recuperação de nó</h3>
+              <p>O storage deixa de responder e de enviar heartbeats. O controlador detecta a falha e re-replica os objetos.</p>
+              <label class="field-label" for="demo-node">Storage para simular falha</label>
+              <select id="demo-node" class="demo-input" aria-label="Selecionar Storage Node"></select>
+              <div class="demo-actions">
+                <button id="demo-fail" type="button" class="button">Simular falha lógica</button>
+                <button id="demo-restore" type="button" class="button">Restaurar nó</button>
+              </div>
+            </div>
+            <div class="demo-column">
+              <h3>2. Detecção de corrupção</h3>
+              <p>Altera um byte de uma réplica descartável e executa scrubbing real. O reparador recompõe as cópias.</p>
+              <label class="field-label" for="demo-path">Arquivo de teste (somente /demo-*)</label>
+              <input id="demo-path" class="demo-input" type="text" value="/demo-corrupcao.txt" spellcheck="false">
+              <div class="demo-actions">
+                <button id="demo-corrupt" type="button" class="button">Corromper 1 réplica e verificar</button>
+              </div>
+            </div>
+          </div>
+          <h3>Registro da apresentação</h3>
+          <ol id="demo-events" class="demo-events" aria-live="polite"><li>Aguardando eventos...</li></ol>
+        </section>
 
         <footer class="footer">
           <span>© DComp Drive · Sistemas Distribuídos · UFS</span>

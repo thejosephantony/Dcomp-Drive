@@ -3,7 +3,7 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
-  const state = { nodes: [], files: [] };
+  const state = { nodes: [], files: [], demoEnabled: false };
   const labels = { HEALTHY: "HEALTHY", SUSPECT: "SUSPECT", DEAD: "DEAD", UNDER_REPLICATED: "SUB-REPLICADO", UNAVAILABLE: "INDISPONÍVEL" };
 
   function formatBytes(value) {
@@ -46,6 +46,80 @@
     if (status === "DEAD" || status === "UNAVAILABLE") element.classList.add("error");
     else if (status !== "HEALTHY") element.classList.add("warn");
     return element;
+  }
+
+  function demoLog(text) {
+    if (!state.demoEnabled) return;
+    const list = $("demo-events");
+    if (list.children.length === 1 && list.firstElementChild.textContent === "Aguardando eventos...") {
+      list.replaceChildren();
+    }
+    const entry = el("li", "", new Date().toLocaleTimeString("pt-BR") + " · " + text);
+    list.prepend(entry);
+    while (list.children.length > 20) list.lastElementChild.remove();
+  }
+
+  function updateDemoNodeOptions() {
+    if (!state.demoEnabled) return;
+    const select = $("demo-node");
+    const previous = select.value;
+    select.replaceChildren();
+    for (const node of state.nodes) {
+      const option = document.createElement("option");
+      option.value = node.node_id;
+      option.textContent = node.node_id + " (" + node.state + ")";
+      select.append(option);
+    }
+    if (state.nodes.some((node) => node.node_id === previous)) select.value = previous;
+  }
+
+  async function demoRequest(endpoint, button, body) {
+    if (!window.isSecureContext) throw new Error("Abra o painel em HTTPS ou localhost via túnel SSH.");
+    const token = $("demo-token").value;
+    if (!token) throw new Error("Informe o token administrativo do laboratório.");
+    button.disabled = true;
+    try {
+      return await api(endpoint, {
+        method: "POST",
+        headers: { "X-Demo-Token": token, "Content-Type": "application/json" },
+        body: JSON.stringify(body || {})
+      });
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function demoAction(endpoint, button, body, description) {
+    if (!window.confirm(description + "\n\nConfirma a operação apenas no laboratório isolado?")) return;
+    try {
+      const result = await demoRequest(endpoint, button, body);
+      demoLog(description + (result.node_id ? " (" + result.node_id + ")" : "") + ".");
+      if (result.corrupted_ids && result.corrupted_ids.length) {
+        demoLog("Scrubbing detectou cópia corrompida: " + result.corrupted_ids.join(", "));
+      }
+      await refresh();
+    } catch (error) {
+      demoLog("ERRO: " + error.message);
+      message("Falha no modo demonstração: " + error.message, true);
+    }
+  }
+
+  async function initDemo() {
+    try {
+      const config = await api("/demo/config");
+      if (!config.enabled) return;
+      state.demoEnabled = true;
+      $("demo-panel").hidden = false;
+      $("demo-nav").hidden = false;
+      if (!window.isSecureContext) {
+        $("demo-security").hidden = false;
+        for (const id of ["demo-fail", "demo-restore", "demo-corrupt"]) $(id).disabled = true;
+      }
+      updateDemoNodeOptions();
+      demoLog("Modo de demonstração ativo. Use apenas arquivos /demo-*.");
+    } catch (error) {
+      console.warn("Painel de demonstração indisponível:", error.message);
+    }
   }
 
   function renderNodes() {
@@ -133,8 +207,17 @@
   async function refresh() {
     const results = await Promise.allSettled([api("/status"), api("/files/catalog?limit=200")]);
     if (results[0].status === "fulfilled") {
+      const previous = new Map(state.nodes.map((node) => [node.node_id, node.state]));
       state.nodes = results[0].value.nodes || [];
+      if (state.demoEnabled) {
+        for (const node of state.nodes) {
+          if (previous.has(node.node_id) && previous.get(node.node_id) !== node.state) {
+            demoLog(node.node_id + ": " + previous.get(node.node_id) + " → " + node.state);
+          }
+        }
+      }
       renderNodes();
+      updateDemoNodeOptions();
       updateBadge(state.nodes.length > 0 && state.nodes.every((n) => n.state === "HEALTHY"));
     } else {
       $("cluster-badge").className = "health-badge is-error";
@@ -142,7 +225,17 @@
       message("Não foi possível consultar o controlador: " + results[0].reason.message, true);
     }
     if (results[1].status === "fulfilled") {
+      const previousFiles = new Map(state.files.map((file) => [file.path, file]));
       state.files = results[1].value || [];
+      if (state.demoEnabled) {
+        for (const file of state.files) {
+          const old = previousFiles.get(file.path);
+          if (old && file.path.startsWith("/demo-") &&
+              (old.status !== file.status || old.replicas.length !== file.replicas.length)) {
+            demoLog(file.path + ": " + file.status + " · " + file.replicas.length + "/" + file.replication_factor + " réplicas");
+          }
+        }
+      }
       renderFiles();
     } else {
       message("Não foi possível listar os arquivos: " + results[1].reason.message, true);
@@ -194,6 +287,9 @@
         throw new Error(readableError(response, body));
       }
       const buffer = await response.arrayBuffer();
+      if (!window.crypto || !window.crypto.subtle) {
+        throw new Error("A verificação SHA-256 requer HTTPS ou acesso via http://localhost:8000/ (túnel SSH).");
+      }
       const digest = await crypto.subtle.digest("SHA-256", buffer);
       const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
       if (hash !== info.sha256 || buffer.byteLength !== Number(info.size_bytes)) {
@@ -254,6 +350,29 @@
   $("refresh").addEventListener("click", refresh);
   $("file-filter").addEventListener("input", renderFiles);
   $("close-details").addEventListener("click", () => { $("file-details").hidden = true; });
+  $("demo-fail").addEventListener("click", () => {
+    const node = $("demo-node").value;
+    if (!node) return;
+    demoAction("/demo/nodes/" + encodeURIComponent(node) + "/offline", $("demo-fail"),
+      {}, "Simular interrupção lógica de " + node);
+  });
+  $("demo-restore").addEventListener("click", () => {
+    const node = $("demo-node").value;
+    if (!node) return;
+    demoAction("/demo/nodes/" + encodeURIComponent(node) + "/restore", $("demo-restore"),
+      {}, "Restaurar " + node);
+  });
+  $("demo-corrupt").addEventListener("click", () => {
+    const path = $("demo-path").value.trim();
+    if (!/^\/demo-[A-Za-z0-9_.-]{1,100}$/.test(path)) {
+      return message("Use apenas arquivo descartável com caminho /demo-*.", true);
+    }
+    demoAction("/demo/files/corrupt", $("demo-corrupt"), { path },
+      "Corromper uma réplica de " + path + " e executar scrubbing");
+  });
+
   refresh();
-  setInterval(refresh, 10000);
+  initDemo();
+  setInterval(() => { if (state.demoEnabled) refresh(); }, 2000);
+  setInterval(() => { if (!state.demoEnabled) refresh(); }, 10000);
 })();

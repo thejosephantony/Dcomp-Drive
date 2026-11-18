@@ -54,3 +54,47 @@ def test_catalog_endpoint_returns_empty_list_when_no_files(tmp_path) -> None:
         assert response.json() == []
     finally:
         engine.dispose()
+
+
+
+def test_demo_controls_fail_closed_by_default(monkeypatch) -> None:
+    monkeypatch.setenv("DEMO_MODE", "false")
+    monkeypatch.delenv("DEMO_ADMIN_TOKEN", raising=False)
+    client = TestClient(app)
+    assert client.get("/demo/config").json() == {"enabled": False}
+    assert client.post("/demo/nodes/storage-1/offline").status_code == 404
+    assert client.post("/demo/files/corrupt", json={"path": "/demo-test.txt"}).status_code == 404
+
+
+def test_demo_requires_valid_token_and_restricts_corruption(monkeypatch) -> None:
+    monkeypatch.setenv("DEMO_MODE", "true")
+    monkeypatch.setenv("DEMO_ADMIN_TOKEN", "a" * 40)
+    client = TestClient(app)
+    assert client.get("/demo/config").json() == {"enabled": True}
+    assert client.post("/demo/nodes/storage-1/offline").status_code == 403
+    headers = {"X-Demo-Token": "a" * 40}
+    assert client.post(
+        "/demo/files/corrupt",
+        json={"path": "/documento-importante.pdf"},
+        headers=headers,
+    ).status_code == 422
+
+
+def test_storage_failure_simulation_is_authenticated_and_reversible(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from storage.main import app as storage_app
+
+    monkeypatch.setenv("DEMO_MODE", "true")
+    monkeypatch.setenv("DEMO_ADMIN_TOKEN", "b" * 40)
+    client = TestClient(storage_app)
+    headers = {"X-Demo-Token": "b" * 40}
+    assert client.post("/_demo/offline").status_code == 403
+    try:
+        paused = client.post("/_demo/offline", headers=headers)
+        assert paused.status_code == 200
+        assert paused.json()["paused"] is True
+        assert client.get("/health").status_code == 503
+    finally:
+        restored = client.post("/_demo/restore", headers=headers)
+        assert restored.status_code == 200
+    assert client.get("/health").status_code == 200
