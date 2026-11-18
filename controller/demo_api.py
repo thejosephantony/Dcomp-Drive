@@ -230,3 +230,28 @@ async def public_reset(
             pass
     session.commit()
     return {"restored": results, "total": len(results)}
+
+
+
+@router.post("/files/encryption")
+async def private_encryption_evidence(
+    request: CorruptDemoRequest,
+    _: None = Depends(require_demo_admin),
+    session: Session = Depends(get_session),
+) -> dict:
+    if not re.fullmatch(r"/demo-[A-Za-z0-9_.-]{1,100}", request.path):
+        raise HTTPException(422, "Use um arquivo descartável /demo-*")
+    info = metadata(path=request.path, session=session)
+    if not info.version_id or not info.replicas:
+        raise HTTPException(409, "Arquivo não possui réplica acessível")
+    node = _require_node(session, info.replicas[0].node_id)
+    return await _send(node, "/_demo/encryption/" + info.version_id, _secret())
+
+
+@router.post("/public/files/encryption")
+async def public_encryption_evidence(
+    request: CorruptDemoRequest,
+    _: None = Depends(require_public_demo),
+    session: Session = Depends(get_session),
+) -> dict:
+    return await private_encryption_evidence(request, None, session)
