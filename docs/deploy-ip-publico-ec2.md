@@ -1,122 +1,104 @@
-# Publicar DComp-Drive no Elastic IP da EC2 — laboratório isolado
+# Publicação direta na AWS EC2 — IP estático, sem Nginx nem ngrok
 
-**Objetivo:** `https://34.193.62.218/`, sem login, senha, token ou localhost para o visitante; execução real dos ensaios RF1–RF12 pelo navegador. A EC2 continua hospedando o serviço. **O laboratório público é descartável e diferente do cluster privado existente.**
+**Endereço de apresentação:** `https://34.193.62.218`
 
-## 0. Pré-requisitos
+A aplicação é servida diretamente pelo **Uvicorn/Python na própria EC2**: porta pública **443 → 8443 (contêiner gateway)**. O gateway é uma aplicação FastAPI restrita por allowlist, que encaminha somente as operações de navegador ao controlador **isolado** na rede Docker. Nenhum usuário precisa de token ou login.
 
-- Elastic IP 34.193.62.218 **associado à instância atual**.
-- Ubuntu 24.04, Docker Compose e chave SSH de administração.
-- Security Group: liberar TCP **80 e 443** para visitantes; **22 apenas ao IP do administrador**. **Não abrir 8000, 18001, 9000 nem 5432**.
-- Parar túnel ngrok se não for mais necessário: `sudo systemctl disable --now ngrok`.
-- RAM, disco e orçamento para segunda stack de 8 contêineres (PostgreSQL, controller, seis storages). Instância pequena exige revisão: usar `df -h /`, `free -h`, `sudo docker system df`. Com disco raiz pequeno, ampliar EBS antes de prosseguir. Não limpar volumes.
-- Testes automatizados da branch aprovados; não confundir falhas de runner GitHub com erros de teste.
+**Não exponha o controlador `controller.main` diretamente à Internet**: ele possui rotas internas de registro de storages, ACKs e controle de réplicas. O gateway Python em `controller/public_gateway.py` substitui o proxy Nginx e mantém esses endpoints inacessíveis aos visitantes. O projeto privado (`dcomp-drive`, porta 8000 vinculada a localhost) não sofre alterações.
 
-## 1. Teste de código sem alterar o cluster privado
+## 1. Antes do TLS: garantir conectividade da EC2
 
+Confirme no Security Group do Elastic IP:
+- TCP **80** de `0.0.0.0/0` — somente para desafio HTTP-01 do Certbot e renovações. Não precisa de processo escutando permanentemente.
+- TCP **443** de `0.0.0.0/0` — HTTPS do próprio gateway Uvicorn.
+- TCP **22** restrita ao seu endereço IP de administração.
+- **Não abrir** TCP 8000, 18001, 5432 ou 9000.
+
+O Elastic IP deve estar associado à EC2; a subnet pública precisa de Internet Gateway e rota `0.0.0.0/0`. Cheque também `sudo ufw status`.
+
+Como o Nginx não será usado, desligue-o:
 ```bash
-cd ~/Dcomp-Drive
-git fetch origin feature/dashboard-requisitos-rf1-rf12
-git worktree add ../Dcomp-Drive-Public origin/feature/dashboard-requisitos-rf1-rf12
-cd ~/Dcomp-Drive-Public
-sudo docker build -t dcomp-public-rf-test .
-sudo docker run --rm --network none dcomp-public-rf-test python -m pytest -q tests
+sudo systemctl disable --now nginx
+sudo systemctl disable --now ngrok || true
+sudo ss -lntp | grep -E ':(80|443|18001) ' || true
 ```
 
-Se houver qualquer falha, **parar antes do deploy**, corrigir na PR e repetir.
-
-## 2. Subir um laboratório descartável com volumes e banco próprios
-
+Se o acesso TCP 80 ainda estiver duvidoso, utilize **temporariamente** um servidor HTTP Python, sem Nginx:
 ```bash
-cd ~/Dcomp-Drive-Public
-python3 scripts/init_public_lab.py
-sudo docker compose -p dcomp-public -f docker-compose.public.yml --env-file .env.public config --quiet
-sudo docker compose -p dcomp-public -f docker-compose.public.yml --env-file .env.public up -d --build
-sudo docker compose -p dcomp-public -f docker-compose.public.yml --env-file .env.public ps
-curl -fsS http://127.0.0.1:18001/demo/config
-```
-
-Esperado: `{"enabled":true,"public":true}`. O `controller` fica em **127.0.0.1:18001**, não exposto à internet. O cluster anterior segue em **127.0.0.1:8000** com seus volumes intocados. A stack pública começa com cinco nós registrados; sexto está em espera para RF6. **Nunca executar `down -v` no projeto privado.**
-
-O script gera automaticamente um token **interno** (apenas controlador → storage), senha PostgreSQL e chave AES-256-GCM. Não exibir esses valores, não copiar o `.env.public` para Git e não recriar a configuração depois de gravar dados cifrados.
-
-## 3. HTTPS válido sobre IP, sem domínio e sem ngrok
-
-Let's Encrypt oferece certificados de IP público de aproximadamente seis dias. **Certbot >= 5.4** suporta IP no modo webroot (ver https://letsencrypt.org/2026/03/11/shorter-certs-certbot/). Renovação automática é obrigatória.
-
-No host Ubuntu, instale e habilite Nginx:
-
-```bash
-sudo apt update
-sudo apt install -y nginx snapd
-sudo systemctl enable --now nginx
 sudo mkdir -p /var/www/html/.well-known/acme-challenge
-sudo snap install core
-sudo snap refresh core
-sudo snap install --classic certbot
-sudo /snap/bin/certbot --version
+echo "DComp-Drive OK" | sudo tee /var/www/html/.well-known/acme-challenge/check.txt
+sudo python3 -m http.server 80 --bind 0.0.0.0 --directory /var/www/html
 ```
+De outra rede, abra `http://34.193.62.218/.well-known/acme-challenge/check.txt`. Deve aparecer `DComp-Drive OK`. **Pare esse servidor com Ctrl+C ANTES do Certbot.** Se não abrir, corrija Security Group/EIP/subnet/UFW: emitir certificado sem conectividade não resolverá o problema.
 
-Confirme que a versão é 5.4 ou superior e que a porta pública 80 responde antes de solicitar o certificado. O domínio nginx padrão deve servir arquivos em `/var/www/html`.
+## 2. Certificado HTTPS válido para o IP, com Certbot standalone
 
+O Certbot já foi instalado no ambiente Python `/opt/certbot/` (versão >=5.4). Não é necessário Snap nem servidor HTTP permanente. O plugin `standalone` inicia temporariamente seu próprio servidor HTTP na porta 80 para validação.
+
+Teste:
 ```bash
-sudo /snap/bin/certbot certonly --webroot -w /var/www/html \
-  --preferred-profile shortlived --ip-address 34.193.62.218
+sudo /opt/certbot/bin/certbot certonly --dry-run \
+  --standalone --preferred-profile shortlived \
+  --ip-address 34.193.62.218
 ```
-
-Siga as instruções interativas do Certbot. **Se a emissão falhar, não publicar HTTP sem TLS.**
-
-Quando o certificado existir em `/etc/letsencrypt/live/34.193.62.218/`, instale a configuração com a allowlist de endpoints públicos:
-
+Se passar, emita o certificado **definitivo**, confiável (sem `--staging` e sem `--dry-run`):
 ```bash
-sudo cp deploy/nginx-dcomp-public.conf /etc/nginx/sites-available/dcomp-drive-public
-sudo ln -sf /etc/nginx/sites-available/dcomp-drive-public /etc/nginx/sites-enabled/dcomp-drive-public
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t
-sudo systemctl reload nginx
+sudo /opt/certbot/bin/certbot certonly \
+  --standalone --preferred-profile shortlived \
+  --ip-address 34.193.62.218
+sudo /opt/certbot/bin/certbot certificates
 ```
+Atenção: os certificados de IP são de curta duração (~6 dias). O certificado será referenciado por `/etc/letsencrypt/live/34.193.62.218/fullchain.pem` e `privkey.pem`. Confirme os caminhos na saída do Certbot, caso ele use algum sufixo.
 
-Para renovar automaticamente e recarregar o nginx:
-
-```bash
-sudo mkdir -p /etc/letsencrypt/renewal-hooks/deploy
-printf '#!/bin/sh\n/usr/bin/systemctl reload nginx\n' | \
-  sudo tee /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh >/dev/null
-sudo chmod 755 /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
-sudo /snap/bin/certbot renew --dry-run
-```
-
-Verificar que existe temporizador do Certbot instalado (`systemctl list-timers | grep -i certbot`) e que ele renova certificados de seis dias com antecedência suficiente. Não considerar pronto sem `renew --dry-run` e teste externo.
-
-## 4. Testes públicos (navegador anônimo, rede fora da EC2)
-
-```bash
-curl -fsSI https://34.193.62.218/
-curl -fsS https://34.193.62.218/demo/config
-curl -i https://34.193.62.218/nodes/register
-curl -i https://34.193.62.218/demo/nodes/storage-1/offline
-```
-
-Os dois últimos devem retornar **404/403**, sem permitir operações administrativas internas. Abra `https://34.193.62.218/` em **outro celular/rede**, sem login e sem aviso de certificado. Acesse RF1, faça upload de arquivo descartável `/demo-arquivo.txt`, teste rename/move/ls/mkdir/rmdir, N=3, hash e cópias; em seguida RF4, RF5, RF6, RF7, RF8, RF9, RF10, RF11, RF12.
-
-## 5. Limites e segurança
-
-- O usuário público não vê `DEMO_ADMIN_TOKEN`. Endpoints do controlador principal não são expostos pelo Nginx.
-- O IP publica **somente** o ambiente `dcomp-public`; PostgreSQL, volumes, rede Docker e chave de criptografia são independentes do projeto `dcomp-drive`.
-- Limites: 1 MiB por upload, 100 arquivos publicados, 32 MiB por storage, 6 req/s por IP com burst, 1 teste de restart por 3 minutos (além de limite de IP no Nginx).
-- Falha lógica de um storage se restaura automaticamente após cerca de 60 segundos; interrupções de navegador não deixam nó parado indefinidamente.
-- Os seis storages são **contêineres numa única EC2**: demonstram falha lógica e re-replicação, não tolerância à perda do host físico.
-- As URLs de backend interno não podem ser alteradas pelo visitante. Não expor socket Docker, /docs, /files/prepare ou /nodes/register.
-- Não garantir resistência a tráfego adversarial elevado: um laboratório anônimo em IP público precisa de monitoramento de disco/CPU, custos, proteção DDoS externa se ficar permanentemente aberto e eventual limpeza programada **apenas** dos volumes públicos.
-
-## 6. Estratégia para main e rollback
-
-Esta branch deve ser mesclada na `main` **somente depois** de teste automatizado, validação Docker/Nginx e verificação em navegador. Deploy não se faz pelo IP: o código é puxado via Git na EC2, imagens recompiladas e contêineres da stack pública atualizados.
-
-Se a stack pública falhar, interrompa apenas ela:
+## 3. Atualizar a branch e subir o gateway Uvicorn com TLS
 
 ```bash
 cd ~/Dcomp-Drive-Public
-sudo docker compose -p dcomp-public -f docker-compose.public.yml --env-file .env.public stop
+git fetch origin feature/dashboard-requisitos-rf1-rf12
+git switch --detach origin/feature/dashboard-requisitos-rf1-rf12
+sudo docker build -t dcomp-public-new-test .
+sudo docker run --rm --network none dcomp-public-new-test python -m pytest -q tests
+```
+**Não prossiga se os testes não passarem.**
+
+```bash
+sudo docker compose -p dcomp-public \
+  -f docker-compose.public.yml --env-file .env.public config --quiet
+sudo docker compose -p dcomp-public \
+  -f docker-compose.public.yml --env-file .env.public up -d --build
+sudo docker compose -p dcomp-public \
+  -f docker-compose.public.yml --env-file .env.public ps
 ```
 
-A stack privada continua intacta. Nunca usar `docker compose down -v` sem identificar o projeto/volumes.
+A stack pública tem PostgreSQL, controlador, seis storages (cinco inicialmente registrados e o sexto standby) e um gateway HTTPS. Só **443** é vinculado publicamente. O controlador continua em `127.0.0.1:18001`, sem exposição direta.
+
+## 4. Conferência pública (rede externa à EC2)
+
+```bash
+curl -fsS https://34.193.62.218/demo/config
+python3 scripts/verify_public_ip.py
+```
+Os endpoints `/nodes/register`, `/files/prepare`, `/docs` e os controles `/demo/nodes/*` devem responder 404 pelo IP público. O teste do navegador deve incluir upload, download com SHA-256, renomear, mover, mkdir/rmdir, visualizar N réplicas, corrupção, falha e reparação, sexto nó, drain, concorrência, evidência de AES-GCM, reinício isolado, métricas e logs.
+
+## 5. Renovação automática (obrigatória)
+
+O Certbot usa modo `standalone`, que escuta temporariamente na porta 80; deixe o 80 livre para as renovações. Instale o timer e o serviço:
+```bash
+sudo cp deploy/dcomp-public-cert-renew.service /etc/systemd/system/
+sudo cp deploy/dcomp-public-cert-renew.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now dcomp-public-cert-renew.timer
+sudo systemctl list-timers --all | grep dcomp-public
+sudo /opt/certbot/bin/certbot renew --dry-run
+```
+O serviço executa o `renew`; se um certificado for renovado, o hook reinicia `dcomp-public-gateway-1` para recarregá-lo. Como o timer foi instalado depois da emissão, **é necessário confirmar que o `renew --dry-run` consegue concluir a validação**.
+
+## Segurança e limites
+
+- Sem Nginx, **a restrição de rotas está em `controller/public_gateway.py`**, com limites de corpo e de taxa por IP. Não exponha ou publique o `controller.main`.
+- Visitantes não precisam de login ou token. O segredo interno do storage e a chave AES ficam apenas em `.env.public` (arquivo ignorado por Git e Docker build).
+- Banco e volumes isolados por `-p dcomp-public`; projeto anterior permanece independente.
+- O teste de falha lógica tem restauração automática; o reinício de RF10 afeta exclusivamente o controlador da sandbox.
+- Não afirme tolerância a perda do host EC2: os storages são contêineres no mesmo servidor.
+- A proteção por taxa é de aplicação, adequada a uma demonstração acadêmica, **não equivale a proteção DDoS**.
+- Não execute `down -v` em nenhuma stack com dados a preservar.
