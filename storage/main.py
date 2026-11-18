@@ -15,6 +15,7 @@ import logging
 import hmac
 import os
 import re
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, Depends, Header, HTTPException, Query, Request, Response
@@ -102,6 +103,10 @@ async def report_forever() -> None:
     reconciled = False
     async with httpx.AsyncClient(timeout=3) as client:
         while True:
+            if DEMO_PAUSED and DEMO_OFFLINE_AT is not None:
+                maximum = float(os.getenv("DEMO_AUTO_RESTORE_SECONDS", "60"))
+                if maximum > 0 and time.monotonic() - DEMO_OFFLINE_AT >= maximum:
+                    restore_demo_node_automatically()
             if DEMO_PAUSED:
                 registered = False
                 reconciled = False
@@ -237,6 +242,16 @@ app = FastAPI(title=f"DComp Storage {NODE_ID}", version="0.2.0", lifespan=lifesp
 # Falha lógica: bloqueia tráfego do nó e suspende heartbeats. Nunca para Docker.
 # Somente em ambiente de laboratório isolado, desativado por padrão.
 DEMO_PAUSED = False
+DEMO_OFFLINE_AT: float | None = None
+
+
+def restore_demo_node_automatically() -> None:
+    global DEMO_PAUSED, DEMO_OFFLINE_AT
+    if not DEMO_PAUSED:
+        return
+    DEMO_PAUSED = False
+    DEMO_OFFLINE_AT = None
+    logger.warning("demo_node_automatically_restored node=%s", NODE_ID)
 
 
 def _require_demo_admin(x_demo_token: str | None = Header(default=None)) -> None:
@@ -258,16 +273,18 @@ async def demo_node_outage(request: Request, call_next):
 
 @app.post("/_demo/offline")
 def demo_offline(_: None = Depends(_require_demo_admin)) -> dict:
-    global DEMO_PAUSED
+    global DEMO_PAUSED, DEMO_OFFLINE_AT
     DEMO_PAUSED = True
+    DEMO_OFFLINE_AT = time.monotonic()
     logger.warning("demo_node_failure_injected node=%s", NODE_ID)
     return {"node_id": NODE_ID, "paused": True}
 
 
 @app.post("/_demo/restore")
 def demo_restore(_: None = Depends(_require_demo_admin)) -> dict:
-    global DEMO_PAUSED
+    global DEMO_PAUSED, DEMO_OFFLINE_AT
     DEMO_PAUSED = False
+    DEMO_OFFLINE_AT = None
     logger.info("demo_node_restored node=%s", NODE_ID)
     return {"node_id": NODE_ID, "paused": False}
 
